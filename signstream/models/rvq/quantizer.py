@@ -129,10 +129,18 @@ class ResidualVectorQuantizer(nn.Module):
             # Commitment loss (move inputs towards embeddings)  
             commit_loss = commit_loss + self.beta * torch.mean((residual - quantized.detach()) ** 2)
             
-            # Usage regularization: KL divergence from uniform distribution
-            uniform_prob = 1.0 / self.codebook_size
+            # Usage regularization: KL divergence from uniform distribution (with numerical stability)
+            uniform_prob = torch.tensor(1.0 / self.codebook_size, device=x.device, dtype=x.dtype)
             avg_probs = probs.mean(dim=0)  # Average over batch
-            kl_div = torch.sum(avg_probs * torch.log(avg_probs / uniform_prob + 1e-8))
+            
+            # Clamp probabilities to prevent log(0) and extreme values
+            avg_probs = torch.clamp(avg_probs, min=1e-8, max=1.0 - 1e-8)
+            uniform_prob = torch.clamp(uniform_prob, min=1e-8)
+            
+            # More stable KL divergence computation
+            kl_div = torch.sum(avg_probs * (torch.log(avg_probs) - torch.log(uniform_prob)))
+            kl_div = torch.clamp(kl_div, min=0.0, max=10.0)  # Prevent extreme KL values
+            
             usage_reg_tensor = torch.tensor(self.usage_reg, device=x.device, dtype=x.dtype)
             usage_loss = usage_loss + usage_reg_tensor * kl_div
             
