@@ -54,6 +54,7 @@ class RVQTrainingLoop:
         
         # Loss weights
         self.temporal_alpha = self.model_config['rvq'].get('temporal_loss_alpha', 0.05)
+        self.enable_temporal_loss = self.model_config['rvq'].get('enable_temporal_loss', True)
         self.usage_beta = self.model_config['rvq'].get('usage_reg', 1e-3)
         
         # Checkpoint directory
@@ -98,7 +99,7 @@ class RVQTrainingLoop:
                 recon, codes, q_loss, usage_loss, z_q = self.model(x_seq, part)
                 
                 # Reconstruction loss with stability checks
-                loss_r = recon_loss(recon, x_seq, loss_type="mse")  # Use MSE instead of Huber for stability
+                loss_r = recon_loss(recon, x_seq, loss_type="huber")  # Use Huber loss as requested
                 
                 # Check for NaN in individual losses
                 if not torch.isfinite(loss_r):
@@ -111,8 +112,8 @@ class RVQTrainingLoop:
                     logger.warning(f"Non-finite usage loss for {part}, skipping")
                     continue
                 
-                # Temporal consistency loss (if multiple chunks)
-                if N > 1:
+                # Temporal consistency loss (if multiple chunks and enabled)
+                if N > 1 and self.enable_temporal_loss and self.temporal_alpha > 0:
                     z_q_seq = z_q.view(B, N, -1)
                     loss_t = temporal_loss(z_q_seq)
                 else:
@@ -200,11 +201,11 @@ class RVQTrainingLoop:
                     
                     # Compute losses
                     loss_r = recon_loss(recon, x_seq, loss_type="huber")
-                    if N > 1:
+                    if N > 1 and self.enable_temporal_loss and self.temporal_alpha > 0:
                         z_q_seq = z_q.view(B, N, -1)
                         loss_t = temporal_loss(z_q_seq)
                     else:
-                        loss_t = torch.tensor(0.0)
+                        loss_t = torch.tensor(0.0, device=self.device)
                     
                     part_loss = loss_r + q_loss + usage_loss + self.temporal_alpha * loss_t
                     
