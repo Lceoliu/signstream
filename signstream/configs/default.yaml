@@ -3,9 +3,9 @@ experiment_name: "Baseline-Test001"
 save_path: "./checkpoints"
 
 data:
-  root: "./CSL-Daily"  # Windows-compatible path
-  split_file: "./split_files.json"  # Optional split file
-  fps: 25
+  root: "/workspace/data/data_lc/slr_rvq/CSL-Daily" 
+  split_file: "/workspace/data/data_lc/slr_rvq/CSL-Daily/split_files.json"  # Optional split file
+  fps: 30
   chunk_len: 10
   max_seq_len: 1000  # Maximum sequence length in frames
   normalize:

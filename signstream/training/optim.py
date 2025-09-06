@@ -25,11 +25,11 @@ def create_optimizer(model: torch.nn.Module, config: Dict[str, Any]) -> torch.op
         Configured optimizer
     """
     training_config = config['training']
-    
+
     optimizer_type = training_config.get('optimizer', 'adamw').lower()
-    lr = training_config['lr']
-    weight_decay = training_config['wd']
-    
+    lr = float(training_config['lr'])
+    weight_decay = float(training_config['wd'])
+
     if optimizer_type == 'adamw':
         optimizer = AdamW(
             model.parameters(),
@@ -48,7 +48,7 @@ def create_optimizer(model: torch.nn.Module, config: Dict[str, Any]) -> torch.op
         )
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_type}")
-    
+
     return optimizer
 
 
