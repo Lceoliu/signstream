@@ -1,34 +1,68 @@
-# Default configuration for signstream RVQ training
+# SignStream-RVQ Default Configuration
+experiment_name: "Baseline-Test001"
+save_path: "./checkpoints"
 
 data:
-  root: /workspace/data/public_data/CSL_Daily
-  split: train
+  root: "./CSL-Daily"  # Windows-compatible path
+  split_file: "./split_files.json"  # Optional split file
   fps: 25
   chunk_len: 10
+  max_seq_len: 1000  # Maximum sequence length in frames
+  normalize:
+    center_parts: true
+    bbox_range: 8
+    eye_distance_norm: true
+  body_parts:
+    face: [24, 91]
+    left_hand: [92, 112] 
+    right_hand: [113, 133]
+    body: [1, 17]
+    full_body: [1, 133]
+  center_indices:
+    body: 1
+    face: 32
+    left_hand: 92
+    right_hand: 113
   augment:
     mirror: true
+    mirror_prob: 0.5
     time_warp: true
+    time_warp_factor: 0.1
     dropout_prob: 0.05
+    confidence_threshold: 0.1
 
 model:
-  arch: mlp
+  encoder_layer: 2
+  encoder_latent_dim: 256
   latent_dim: 256
   type_embed_dim: 16
+  arch: "transformer"  # mlp or transformer
   rvq:
-    levels: 2
-    codebook_size: 128
+    levels: 3
+    codebook_size: 1024
+    ema_decay: 0.99
     commitment_beta: 0.25
-    usage_beta: 0.0
+    usage_reg: 1e-3
+    temporal_loss_alpha: 0.05
 
-train:
-  epochs: 1
-  batch_size: 2
-  lr: 1e-3
-  wd: 0.0
-  device: cpu
+training:
+  epochs: 200
+  batch_size: 8
+  lr: 3e-4
+  wd: 0.01
+  amp: "bf16"  # fp32, fp16, bf16
+  log_wandb: false
   seed: 42
-  temporal_alpha: 0.0
+  save_every: 5
+  eval_every: 1
+  sample_every: 5  # Sample tokens every N epochs
+  num_eval_samples: 5
+
+logging:
+  use_tensorboard: true
+  log_dir: "./logs"
+  log_level: "INFO"
 
 export:
   enable_rle: true
-  rle_threshold: 0.02
+  rle_threshold: 0.02  # Threshold for no-change detection

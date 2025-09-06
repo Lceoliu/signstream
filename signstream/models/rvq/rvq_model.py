@@ -16,6 +16,8 @@ class RVQModel(nn.Module):
         codebook_size: int,
         levels: int,
         commitment_beta: float = 0.25,
+        ema_decay: float = 0.99,
+        usage_reg: float = 1e-3,
         arch: str = "mlp",
     ) -> None:
         super().__init__()
@@ -25,6 +27,8 @@ class RVQModel(nn.Module):
             codebook_size=codebook_size,
             levels=levels,
             commitment_beta=commitment_beta,
+            ema_decay=ema_decay,
+            usage_reg=usage_reg,
         )
         self.decoder = PoseDecoder(latent_dim, frame_dim, chunk_len, arch)
 
