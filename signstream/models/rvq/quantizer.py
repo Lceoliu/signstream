@@ -133,7 +133,8 @@ class ResidualVectorQuantizer(nn.Module):
             uniform_prob = 1.0 / self.codebook_size
             avg_probs = probs.mean(dim=0)  # Average over batch
             kl_div = torch.sum(avg_probs * torch.log(avg_probs / uniform_prob + 1e-8))
-            usage_loss = usage_loss + self.usage_reg * kl_div
+            usage_reg_tensor = torch.tensor(self.usage_reg, device=x.device, dtype=x.dtype)
+            usage_loss = usage_loss + usage_reg_tensor * kl_div
             
             # Update residual for next level
             residual = residual - quantized
