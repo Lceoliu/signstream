@@ -12,26 +12,55 @@ PART_TYPES: Dict[str, int] = {
 
 
 class PoseEncoder(nn.Module):
-    """Simple MLP encoder for pose chunks.
+    """Encode pose chunks with either an MLP or a Transformer backbone."""
 
-    The encoder flattens the spatio-temporal pose representation and
-    projects it into a latent space. A learnable embedding is added to
-    distinguish different body parts.
-    """
-
-    def __init__(self, input_dim: int, latent_dim: int) -> None:
+    def __init__(
+        self,
+        frame_dim: int,
+        chunk_len: int,
+        latent_dim: int,
+        arch: str = "mlp",
+    ) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, latent_dim),
-            nn.ReLU(),
-            nn.Linear(latent_dim, latent_dim),
-        )
+        self.arch = arch
+        self.chunk_len = chunk_len
+        self.frame_dim = frame_dim
+        if arch == "mlp":
+            self.net = nn.Sequential(
+                nn.Linear(frame_dim * chunk_len, latent_dim),
+                nn.ReLU(),
+                nn.Linear(latent_dim, latent_dim),
+            )
+        elif arch == "transformer":
+            self.input_proj = nn.Linear(frame_dim, latent_dim)
+            self.pos_embed = nn.Parameter(torch.zeros(chunk_len, latent_dim))
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=latent_dim, nhead=4, batch_first=True
+            )
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        else:
+            raise ValueError(f"Unknown arch: {arch}")
         self.type_embed = nn.Embedding(len(PART_TYPES), latent_dim)
 
     def forward(self, x: torch.Tensor, part: str) -> torch.Tensor:
+        """Encode a batch of pose chunks.
+
+        Args:
+            x: Tensor of shape ``[B, L, F]`` where ``F`` is frame_dim.
+            part: Body part name.
+        Returns:
+            Tensor of shape ``[B, latent_dim]``.
+        """
         part_id = torch.full(
             (x.shape[0],), PART_TYPES[part], dtype=torch.long, device=x.device
         )
-        h = self.net(x)
-        h = h + self.type_embed(part_id)
+        if self.arch == "mlp":
+            h = self.net(x.view(x.shape[0], -1))
+            h = h + self.type_embed(part_id)
+        else:
+            h = self.input_proj(x)
+            h = h + self.pos_embed[: x.shape[1]].unsqueeze(0)
+            h = h + self.type_embed(part_id).unsqueeze(1)
+            h = self.transformer(h)
+            h = h.mean(dim=1)
         return h

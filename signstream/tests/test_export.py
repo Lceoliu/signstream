@@ -28,7 +28,8 @@ def test_export_tokens(tmp_path) -> None:
     start, end = ds.body_part_indices["full_body"]
     num_points = end - start + 1
     model = RVQModel(
-        input_dim=5 * num_points * 3,
+        frame_dim=num_points * 3,
+        chunk_len=5,
         latent_dim=16,
         codebook_size=8,
         levels=2,

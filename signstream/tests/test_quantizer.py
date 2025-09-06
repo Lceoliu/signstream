@@ -10,7 +10,8 @@ from signstream.models.rvq.quantizer import ResidualVectorQuantizer
 def test_quantizer_roundtrip() -> None:
     quant = ResidualVectorQuantizer(dim=8, codebook_size=16, levels=2)
     x = torch.randn(4, 8)
-    q, codes, loss = quant(x)
+    q, codes, c_loss, u_loss = quant(x)
     assert q.shape == x.shape
     assert codes.shape == (4, 2)
-    assert loss.shape == torch.Size([])
+    assert c_loss.shape == torch.Size([])
+    assert u_loss.shape == torch.Size([])

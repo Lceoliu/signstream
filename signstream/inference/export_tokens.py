@@ -13,14 +13,15 @@ def load_model(config: dict, checkpoint: str | None = None) -> RVQModel:
     part = "full_body"
     # Full body contains 133 keypoints (COCO WholeBody without global).
     num_points = 133
-    input_dim = config["data"]["chunk_len"] * num_points * 3
-
+    frame_dim = num_points * 3
     model = RVQModel(
-        input_dim=input_dim,
+        frame_dim=frame_dim,
+        chunk_len=config["data"]["chunk_len"],
         latent_dim=config["model"]["latent_dim"],
         codebook_size=config["model"]["rvq"]["codebook_size"],
         levels=config["model"]["rvq"]["levels"],
         commitment_beta=config["model"]["rvq"].get("commitment_beta", 0.25),
+        arch=config["model"].get("arch", "mlp"),
     )
     if checkpoint:
         state = torch.load(checkpoint, map_location="cpu")
@@ -42,9 +43,9 @@ def export_samples(
         sample = dataset[i]
         x = sample["chunks"][part]  # [N, L, K, 3]
         N, L, K, C = x.shape
-        x_flat = x.view(N, L * K * C).to(device)
+        x_flat = x.view(N, L, K * C).to(device)
         with torch.no_grad():
-            _, codes, _ = model(x_flat, part)
+            _, codes, _, _, _ = model(x_flat, part)
         codes_list = codes.cpu().tolist()
         tokens = [{"t": t, "FB": c} for t, c in enumerate(codes_list)]
         if enable_rle:

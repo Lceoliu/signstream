@@ -10,25 +10,27 @@ class RVQModel(nn.Module):
 
     def __init__(
         self,
-        input_dim: int,
+        frame_dim: int,
+        chunk_len: int,
         latent_dim: int,
         codebook_size: int,
         levels: int,
         commitment_beta: float = 0.25,
+        arch: str = "mlp",
     ) -> None:
         super().__init__()
-        self.encoder = PoseEncoder(input_dim, latent_dim)
+        self.encoder = PoseEncoder(frame_dim, chunk_len, latent_dim, arch)
         self.quantizer = ResidualVectorQuantizer(
             dim=latent_dim,
             codebook_size=codebook_size,
             levels=levels,
             commitment_beta=commitment_beta,
         )
-        self.decoder = PoseDecoder(latent_dim, input_dim)
+        self.decoder = PoseDecoder(latent_dim, frame_dim, chunk_len, arch)
 
     def forward(self, x: torch.Tensor, part: str):
         """Encode, quantize and decode pose chunks."""
         z = self.encoder(x, part)
-        z_q, codes, q_loss = self.quantizer(z)
+        z_q, codes, q_loss, usage_loss = self.quantizer(z)
         recon = self.decoder(z_q, part)
-        return recon, codes, q_loss
+        return recon, codes, q_loss, usage_loss, z_q
