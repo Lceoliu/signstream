@@ -3,6 +3,7 @@ from torch import nn
 from typing import Tuple
 import torch.nn.functional as F
 
+
 class ResidualVectorQuantizer(nn.Module):
     """Residual vector quantizer with EMA updates and straight-through estimator.
 
@@ -80,17 +81,21 @@ class ResidualVectorQuantizer(nn.Module):
             encodings = F.one_hot(flat_indices, num_classes=self.codebook_size).float()
 
             # Update cluster sizes
-            self.cluster_size[level] = self.cluster_size[level] * self.ema_decay + \
-                                     (1 - self.ema_decay) * encodings.sum(0)
+            self.cluster_size[level] = self.cluster_size[level] * self.ema_decay + (
+                1 - self.ema_decay
+            ) * encodings.sum(0)
 
             # Update embedding averages
             dw = torch.matmul(encodings.t(), flat_x)
-            self.embed_avg[level] = self.embed_avg[level] * self.ema_decay + \
-                                   (1 - self.ema_decay) * dw
+            self.embed_avg[level] = (
+                self.embed_avg[level] * self.ema_decay + (1 - self.ema_decay) * dw
+            )
 
             # Normalize embeddings
             n = self.cluster_size[level].sum()
-            cluster_size = (self.cluster_size[level] + 1e-5) / (n + 1e-5 * self.codebook_size)
+            cluster_size = (self.cluster_size[level] + 1e-5) / (
+                n + 1e-5 * self.codebook_size
+            )
             embed_normalized = self.embed_avg[level] / cluster_size.unsqueeze(1)
 
             # Update codebook weights
@@ -127,12 +132,26 @@ class ResidualVectorQuantizer(nn.Module):
             # Codebook loss (move embeddings towards inputs)
             commit_loss = commit_loss + torch.mean((residual.detach() - quantized) ** 2)
             # Commitment loss (move inputs towards embeddings)
-            commit_loss = commit_loss + self.beta * torch.mean((residual - quantized.detach()) ** 2)
+            commit_loss = commit_loss + self.beta * torch.mean(
+                (residual - quantized.detach()) ** 2
+            )
 
-            # Usage regularization: KL divergence from uniform distribution
-            uniform_prob = 1.0 / self.codebook_size
+            # Usage regularization: KL divergence from uniform distribution (with numerical stability)
+            uniform_prob = torch.tensor(
+                1.0 / self.codebook_size, device=x.device, dtype=x.dtype
+            )
             avg_probs = probs.mean(dim=0)  # Average over batch
-            kl_div = torch.sum(avg_probs * torch.log(avg_probs / uniform_prob + 1e-8))
+
+            # Clamp probabilities to prevent log(0) and extreme values
+            avg_probs = torch.clamp(avg_probs, min=1e-8, max=1.0 - 1e-8)
+            uniform_prob = torch.clamp(uniform_prob, min=1e-8)
+
+            # More stable KL divergence computation
+            kl_div = torch.sum(
+                avg_probs * (torch.log(avg_probs) - torch.log(uniform_prob))
+            )
+            kl_div = torch.clamp(kl_div, min=0.0, max=10.0)  # Prevent extreme KL values
+
             usage_reg_tensor = torch.tensor(
                 float(self.usage_reg), device=x.device, dtype=x.dtype
             )

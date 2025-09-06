@@ -42,14 +42,14 @@ model:
     levels: 3
     codebook_size: 1024
     ema_decay: 0.99
-    commitment_beta: 0.25
-    usage_reg: 1e-3
-    temporal_loss_alpha: 0.05
+    commitment_beta: 0.1  # Reduced for stability
+    usage_reg: 0.0001  # Reduced for stability
+    temporal_loss_alpha: 0.01  # Reduced for stability
 
 training:
   epochs: 200
   batch_size: 8
-  lr: 3e-4
+  lr: 0.0001  # Reduced learning rate for stability
   wd: 0.01
   amp: "bf16"  # fp32, fp16, bf16
   log_wandb: false
@@ -58,6 +58,9 @@ training:
   eval_every: 1
   sample_every: 5  # Sample tokens every N epochs
   num_eval_samples: 5
+  # Stability parameters
+  max_grad_norm: 1.0  # Gradient clipping
+  loss_scale_factor: 0.1  # Scale loss to prevent explosion
 
 logging:
   use_tensorboard: true

@@ -48,6 +48,10 @@ class RVQTrainingLoop:
         self.sample_every = self.training_config.get('sample_every', 5)
         self.num_eval_samples = self.training_config.get('num_eval_samples', 5)
         
+        # Stability parameters
+        self.max_grad_norm = self.training_config.get('max_grad_norm', 1.0)
+        self.loss_scale_factor = self.training_config.get('loss_scale_factor', 1.0)
+        
         # Loss weights
         self.temporal_alpha = self.model_config['rvq'].get('temporal_loss_alpha', 0.05)
         self.usage_beta = self.model_config['rvq'].get('usage_reg', 1e-3)
@@ -93,8 +97,19 @@ class RVQTrainingLoop:
                 # Forward pass
                 recon, codes, q_loss, usage_loss, z_q = self.model(x_seq, part)
                 
-                # Reconstruction loss
-                loss_r = recon_loss(recon, x_seq, loss_type="huber")
+                # Reconstruction loss with stability checks
+                loss_r = recon_loss(recon, x_seq, loss_type="mse")  # Use MSE instead of Huber for stability
+                
+                # Check for NaN in individual losses
+                if not torch.isfinite(loss_r):
+                    logger.warning(f"Non-finite reconstruction loss for {part}, skipping")
+                    continue
+                if not torch.isfinite(q_loss):
+                    logger.warning(f"Non-finite quantization loss for {part}, skipping")
+                    continue
+                if not torch.isfinite(usage_loss):
+                    logger.warning(f"Non-finite usage loss for {part}, skipping")
+                    continue
                 
                 # Temporal consistency loss (if multiple chunks)
                 if N > 1:
@@ -116,8 +131,23 @@ class RVQTrainingLoop:
                     'total_loss': part_loss.item()
                 }
             
+            # Check for NaN/Inf losses before backward pass
+            if not torch.isfinite(total_loss):
+                logger.warning(f"Non-finite loss detected: {total_loss.item()}, skipping batch")
+                continue
+            
+            # Scale loss to prevent explosion
+            scaled_loss = total_loss * self.loss_scale_factor
+            
             # Backward pass
-            total_loss.backward()
+            scaled_loss.backward()
+            
+            # Gradient clipping
+            if self.max_grad_norm > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                if grad_norm > self.max_grad_norm * 2:  # Log if gradients are very large
+                    logger.warning(f"Large gradient norm detected: {grad_norm:.4f}")
+            
             self.optimizer.step()
             
             # Accumulate metrics
