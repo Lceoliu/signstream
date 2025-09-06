@@ -220,6 +220,7 @@ class CSLDailyDataset(Dataset):
 
         # Use the larger dimension as unit length
         unit_length = torch.max(bbox_width, bbox_height).clamp(min=1e-6)
+        unit_length = unit_length.view(1, -1, 1)
 
         # Normalize positions (keep confidence scores unchanged)
         poses_normalized = poses.clone()

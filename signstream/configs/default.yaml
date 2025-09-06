@@ -11,12 +11,14 @@ data:
     dropout_prob: 0.05
 
 model:
+  arch: mlp
   latent_dim: 256
   type_embed_dim: 16
   rvq:
     levels: 2
     codebook_size: 128
     commitment_beta: 0.25
+    usage_beta: 0.0
 
 train:
   epochs: 1
@@ -25,6 +27,7 @@ train:
   wd: 0.0
   device: cpu
   seed: 42
+  temporal_alpha: 0.0
 
 export:
   enable_rle: true
