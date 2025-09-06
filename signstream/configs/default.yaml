@@ -33,10 +33,11 @@ data:
 
 model:
   encoder_layer: 2
-  encoder_latent_dim: 256
   latent_dim: 256
   type_embed_dim: 16
   arch: "transformer"  # mlp or transformer
+  dropout: 0.1
+  temporal_aggregation: "mean"  # mean, max, attention
   rvq:
     levels: 3
     codebook_size: 1024

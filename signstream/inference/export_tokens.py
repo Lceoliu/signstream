@@ -22,22 +22,20 @@ logger = logging.getLogger(__name__)
 def load_model(config: Dict[str, Any], checkpoint_path: Optional[str] = None) -> RVQModel:
     """Load RVQ model from configuration and optional checkpoint."""
     
-    # Calculate frame dimensions for full_body
-    body_parts = config["data"]["body_parts"]
-    start, end = body_parts['full_body']
-    num_points = end - start + 1
-    frame_dim = num_points * 3
-    
+    # Create model with new shared backbone architecture
     model = RVQModel(
-        frame_dim=frame_dim,
-        chunk_len=config["data"]["chunk_len"],
         latent_dim=config["model"]["latent_dim"],
+        chunk_len=config["data"]["chunk_len"],
         codebook_size=config["model"]["rvq"]["codebook_size"],
         levels=config["model"]["rvq"]["levels"],
         commitment_beta=config["model"]["rvq"]["commitment_beta"],
         ema_decay=config["model"]["rvq"].get("ema_decay", 0.99),
         usage_reg=config["model"]["rvq"].get("usage_reg", 1e-3),
         arch=config["model"]["arch"],
+        num_layers=config["model"].get("encoder_layer", 2),
+        type_embed_dim=config["model"].get("type_embed_dim", 16),
+        dropout=config["model"].get("dropout", 0.1),
+        temporal_aggregation=config["model"].get("temporal_aggregation", "mean"),
     )
     
     if checkpoint_path:

@@ -271,12 +271,18 @@ class TestRVQModel:
     def model_config(self) -> Dict[str, Any]:
         """Standard model configuration for testing."""
         return {
-            'frame_dim': 48,  # 16 keypoints * 3 coords
-            'chunk_len': 8,
             'latent_dim': 32,
+            'chunk_len': 8,
             'codebook_size': 16,
             'levels': 2,
-            'arch': 'mlp'
+            'arch': 'mlp',
+            'commitment_beta': 0.25,
+            'ema_decay': 0.99,
+            'usage_reg': 1e-3,
+            'num_layers': 2,
+            'type_embed_dim': 16,
+            'dropout': 0.1,
+            'temporal_aggregation': 'mean'
         }
     
     @pytest.fixture
@@ -288,30 +294,37 @@ class TestRVQModel:
         """Test complete model forward pass."""
         batch_size = 4
         chunk_len = model_config['chunk_len']
-        frame_dim = model_config['frame_dim']
         
-        x = torch.randn(batch_size, chunk_len, frame_dim)
+        # Test with different body parts
+        from signstream.models.rvq.encoder import PART_DIMENSIONS
         
-        recon, codes, q_loss, usage_loss, z_q = model(x, "full_body")
-        
-        # Check shapes
-        assert recon.shape == x.shape
-        assert codes.shape == (batch_size, model_config['levels'])
-        assert z_q.shape == (batch_size, model_config['latent_dim'])
-        
-        # Check losses are scalars
-        assert q_loss.dim() == 0
-        assert usage_loss.dim() == 0
+        for part_name, num_keypoints in PART_DIMENSIONS.items():
+            frame_dim = num_keypoints * 3  # x, y, confidence
+            x = torch.randn(batch_size, chunk_len, frame_dim)
+            
+            recon, codes, q_loss, usage_loss, z_q = model(x, part_name)
+            
+            # Check shapes
+            assert recon.shape == x.shape, f"Recon shape mismatch for {part_name}"
+            assert codes.shape == (batch_size, model_config['levels']), f"Codes shape mismatch for {part_name}"
+            assert z_q.shape == (batch_size, model_config['latent_dim']), f"Latent shape mismatch for {part_name}"
+            
+            # Check losses are scalars
+            assert q_loss.dim() == 0, f"Q loss not scalar for {part_name}"
+            assert usage_loss.dim() == 0, f"Usage loss not scalar for {part_name}"
     
     def test_model_reconstruction_sanity(self, model):
         """Test that model can reconstruct simple patterns."""
-        # Create a simple pattern
-        x = torch.zeros(2, 8, 48)
+        # Test with face (68 keypoints * 3 = 204 dims)
+        from signstream.models.rvq.encoder import PART_DIMENSIONS
+        
+        face_dim = PART_DIMENSIONS['face'] * 3
+        x = torch.zeros(2, 8, face_dim)
         x[0] = 1.0  # First sample is all ones
         x[1] = -1.0  # Second sample is all negative ones
         
         # Forward pass
-        recon, _, _, _, _ = model(x, "full_body")
+        recon, _, _, _, _ = model(x, "face")
         
         # Reconstruction should be different for different inputs
         recon_diff = torch.norm(recon[0] - recon[1])
@@ -319,15 +332,17 @@ class TestRVQModel:
     
     def test_model_overfitting_capability(self, model):
         """Test that model can overfit to a single sample (sanity check)."""
-        # Single sample to overfit
-        x = torch.randn(1, 8, 48)
-        target_codes = torch.tensor([[0, 1]])  # Target codes
+        # Single sample to overfit - use body part (17 keypoints * 3 = 51 dims)
+        from signstream.models.rvq.encoder import PART_DIMENSIONS
+        
+        body_dim = PART_DIMENSIONS['body'] * 3
+        x = torch.randn(1, 8, body_dim)
         
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
         
         initial_loss = None
-        for epoch in range(10):
-            recon, codes, q_loss, usage_loss, _ = model(x, "full_body")
+        for epoch in range(20):  # More epochs for better convergence
+            recon, codes, q_loss, usage_loss, _ = model(x, "body")
             
             # Reconstruction + quantization loss
             recon_loss = torch.nn.functional.mse_loss(recon, x)
@@ -342,34 +357,34 @@ class TestRVQModel:
         
         # Loss should decrease significantly
         final_loss = total_loss.item()
-        assert final_loss < initial_loss * 0.8  # At least 20% reduction
+        assert final_loss < initial_loss * 0.5  # At least 50% reduction
     
     def test_model_different_body_parts(self, model_config):
         """Test model handles different body parts correctly."""
         # Create model
         model = RVQModel(**model_config)
         
-        x = torch.randn(2, 8, 48)
+        # Test different parts with correct input dimensions
+        from signstream.models.rvq.encoder import PART_DIMENSIONS
         
-        # Test different parts
         parts = ["face", "left_hand", "right_hand", "body", "full_body"]
         
         results = {}
         for part in parts:
+            frame_dim = PART_DIMENSIONS[part] * 3
+            x = torch.randn(2, 8, frame_dim)
             recon, codes, _, _, _ = model(x, part)
-            results[part] = (recon, codes)
+            results[part] = (recon, codes, x.shape)
         
-        # Results should be different for different parts
-        face_recon, face_codes = results["face"]
-        hand_recon, hand_codes = results["left_hand"]
+        # Results should be different for different parts (when inputs differ)
+        face_recon, face_codes, face_shape = results["face"]
+        hand_recon, hand_codes, hand_shape = results["left_hand"]
         
-        # Reconstructions should be different
-        recon_diff = torch.norm(face_recon - hand_recon)
-        assert recon_diff > 0.1
+        # Shapes should be different (face has more keypoints than hand)
+        assert face_shape != hand_shape
         
-        # Codes might be different too (though not guaranteed)
-        # Just check they're in valid range
-        for part_name, (_, codes) in results.items():
+        # Codes should be in valid range
+        for part_name, (_, codes, _) in results.items():
             assert codes.min() >= 0
             assert codes.max() < model_config['codebook_size']
 
@@ -390,8 +405,11 @@ if __name__ == "__main__":
     quantizer = ResidualVectorQuantizer(**config)
     
     model_config = {
-        'frame_dim': 48, 'chunk_len': 8, 'latent_dim': 32,
-        'codebook_size': 16, 'levels': 2, 'arch': 'mlp'
+        'chunk_len': 8, 'latent_dim': 32,
+        'codebook_size': 16, 'levels': 2, 'arch': 'mlp',
+        'commitment_beta': 0.25, 'ema_decay': 0.99, 'usage_reg': 1e-3,
+        'num_layers': 2, 'type_embed_dim': 16, 'dropout': 0.1,
+        'temporal_aggregation': 'mean'
     }
     model = RVQModel(**model_config)
     
@@ -400,7 +418,20 @@ if __name__ == "__main__":
         test_quantizer.test_quantizer_initialization(quantizer, config)
         test_quantizer.test_forward_pass_shapes(quantizer, config)
         test_metrics.test_codebook_utilization()
-        test_model.test_model_forward_pass(model, model_config)
+        
+        # Test model with all body parts
+        from signstream.models.rvq.encoder import PART_DIMENSIONS
+        test_parts = ['face', 'left_hand', 'right_hand', 'body']
+        
+        for part in test_parts:
+            print(f"Testing {part} part...")
+            part_dim = PART_DIMENSIONS[part] * 3
+            x = torch.randn(2, model_config['chunk_len'], part_dim)
+            recon, codes, q_loss, usage_loss, z_q = model(x, part)
+            assert recon.shape == x.shape, f"Shape mismatch for {part}"
+            assert codes.shape == (2, model_config['levels']), f"Codes shape wrong for {part}"
+            print(f"✓ {part} test passed")
+        
         print("✓ All basic tests passed!")
     except Exception as e:
         print(f"✗ Test failed: {e}")

@@ -115,8 +115,8 @@ class ResidualVectorQuantizer(nn.Module):
         residual = x
         quantized_sum = torch.zeros_like(x)
         codes = []
-        commit_loss = 0.0
-        usage_loss = 0.0
+        commit_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+        usage_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
         
         for level, emb in enumerate(self.codebooks):
             quantized, idx, probs = self._quantize(residual, emb, level)

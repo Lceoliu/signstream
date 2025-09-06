@@ -80,6 +80,12 @@ def create_dummy_dataset(config: dict) -> CSLDailyDataset:
                 'body': (1, 17),
                 'full_body': (1, 133),
             }
+            self.center_indices = {
+                'body': 1,
+                'face': 32,
+                'left_hand': 92,
+                'right_hand': 113,
+            }
             # Create dummy data
             self.valid_samples = []
             for i in range(100):  # 100 dummy samples
@@ -152,26 +158,30 @@ def create_datasets(config: dict):
 def create_model(config: dict, device: torch.device) -> RVQModel:
     """Create RVQ model based on configuration."""
     
-    # Calculate frame dimensions for full_body (default)
-    body_parts = config["data"]["body_parts"]
-    start, end = body_parts['full_body']
-    num_points = end - start + 1
-    frame_dim = num_points * 3
-    
+    # Create model with new shared backbone architecture
     model = RVQModel(
-        frame_dim=frame_dim,
-        chunk_len=config["data"]["chunk_len"],
         latent_dim=config["model"]["latent_dim"],
+        chunk_len=config["data"]["chunk_len"],
         codebook_size=config["model"]["rvq"]["codebook_size"],
         levels=config["model"]["rvq"]["levels"],
         commitment_beta=config["model"]["rvq"]["commitment_beta"],
         ema_decay=config["model"]["rvq"]["ema_decay"],
         usage_reg=config["model"]["rvq"]["usage_reg"],
         arch=config["model"]["arch"],
+        num_layers=config["model"].get("encoder_layer", 2),
+        type_embed_dim=config["model"].get("type_embed_dim", 16),
+        dropout=config["model"].get("dropout", 0.1),
+        temporal_aggregation=config["model"].get("temporal_aggregation", "mean"),
     )
     
     model.to(device)
-    logger.info(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
+    
+    # Log model information
+    model_info = model.get_model_info()
+    logger.info(f"Model created with {model_info['total_parameters']} total parameters")
+    logger.info(f"Architecture: {model_info['arch']}, Latent dim: {model_info['latent_dim']}")
+    logger.info(f"Supported body parts: {model_info['supported_parts']}")
+    logger.info(f"Body part dimensions: {model_info['part_dimensions']}")
     
     return model
 
