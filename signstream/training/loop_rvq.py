@@ -104,8 +104,20 @@ class RVQTrainingLoop:
                 x = batch['chunks'][part]
                 B, N, L, K, C = x.shape
 
-                # Reshape to [B*N, L, K*C] for processing
-                x_seq = x.view(B * N, L, K * C).to(self.device)
+                # Mask padded chunks
+                mask = batch.get('chunk_mask', None)
+                if mask is not None:
+                    mask = mask.to(self.device)  # [B, N]
+                else:
+                    mask = torch.ones(B, N, dtype=torch.bool, device=self.device)
+
+                # Reshape to [B*N, L, K*C] and mask valid chunks only
+                x_seq_all = x.view(B * N, L, K * C).to(self.device)
+                mask_flat = mask.view(B * N)
+                if mask_flat.any():
+                    x_seq = x_seq_all[mask_flat]
+                else:
+                    continue  # no valid chunks
 
                 # Forward pass
                 recon, codes, q_loss, usage_loss, z_q = self.model(x_seq, part)
@@ -133,12 +145,9 @@ class RVQTrainingLoop:
                     logger.warning(f"Non-finite usage loss for {part}, skipping")
                     continue
 
-                # Temporal consistency loss (if multiple chunks and enabled)
-                if N > 1 and self.enable_temporal_loss and self.temporal_alpha > 0:
-                    z_q_seq = z_q.view(B, N, -1)
-                    loss_t = temporal_loss(z_q_seq)
-                else:
-                    loss_t = torch.tensor(0.0, device=self.device)
+                # Temporal consistency loss (disabled by default; would require per-sample masking)
+                # With padding involved, temporal loss is unreliable; keep disabled unless fully masked per sample
+                loss_t = torch.tensor(0.0, device=self.device)
 
                 # Total loss for this part
                 part_loss = loss_r + q_loss + usage_loss + self.temporal_alpha * loss_t
@@ -160,23 +169,48 @@ class RVQTrainingLoop:
                 )
                 continue
 
-            # Scale loss to prevent explosion
-            scaled_loss = total_loss * self.loss_scale_factor
+            # Mixed precision support
+            amp_mode = str(self.training_config.get('amp', 'fp32')).lower()
+            use_cuda = self.device.type == 'cuda'
+            if amp_mode == 'fp16' and use_cuda:
+                from torch.cuda.amp import autocast, GradScaler
+                if not hasattr(self, '_scaler'):
+                    self._scaler = GradScaler()
+                with autocast(dtype=torch.float16):
+                    scaled_loss = total_loss * self.loss_scale_factor
+                # Backward with scaler
+                self._scaler.scale(scaled_loss).backward()
+                # Unscale before clipping
+                if self.max_grad_norm > 0:
+                    self._scaler.unscale_(self.optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.max_grad_norm
+                    )
+                    if grad_norm > self.max_grad_norm * 2:
+                        logger.warning(f"Large gradient norm detected: {grad_norm:.4f}")
+                self._scaler.step(self.optimizer)
+                self._scaler.update()
+            else:
+                # bf16 or fp32 path (bf16 autocast is safe without scaler)
+                if amp_mode == 'bf16' and use_cuda:
+                    from torch.cuda.amp import autocast
+                    with autocast(dtype=torch.bfloat16):
+                        scaled_loss = total_loss * self.loss_scale_factor
+                        scaled_loss.backward()
+                else:
+                    # fp32
+                    scaled_loss = total_loss * self.loss_scale_factor
+                    scaled_loss.backward()
 
-            # Backward pass
-            scaled_loss.backward()
+                # Gradient clipping
+                if self.max_grad_norm > 0:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.max_grad_norm
+                    )
+                    if grad_norm > self.max_grad_norm * 2:
+                        logger.warning(f"Large gradient norm detected: {grad_norm:.4f}")
 
-            # Gradient clipping
-            if self.max_grad_norm > 0:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.max_grad_norm
-                )
-                if (
-                    grad_norm > self.max_grad_norm * 2
-                ):  # Log if gradients are very large
-                    logger.warning(f"Large gradient norm detected: {grad_norm:.4f}")
-
-            self.optimizer.step()
+                self.optimizer.step()
 
             # Accumulate metrics
             for part in self.body_parts:
@@ -227,12 +261,23 @@ class RVQTrainingLoop:
                     # Get chunks for this body part
                     x = batch['chunks'][part]
                     B, N, L, K, C = x.shape
-                    x_seq = x.view(B * N, L, K * C).to(self.device)
+
+                    # Mask padded chunks
+                    mask = batch.get('chunk_mask', None)
+                    if mask is not None:
+                        mask = mask.to(self.device)  # [B, N]
+                    else:
+                        mask = torch.ones(B, N, dtype=torch.bool, device=self.device)
+                    x_seq_all = x.view(B * N, L, K * C).to(self.device)
+                    mask_flat = mask.view(B * N)
+                    if not mask_flat.any():
+                        continue
+                    x_seq = x_seq_all[mask_flat]
 
                     # Forward pass
                     recon, codes, q_loss, usage_loss, z_q = self.model(x_seq, part)
 
-                    # Store codes for analysis
+                    # Store codes for analysis (valid chunks only)
                     all_codes[part].append(codes.cpu())
 
                     # Compute losses using improved weighted loss

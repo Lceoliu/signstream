@@ -80,26 +80,27 @@ class ResidualVectorQuantizer(nn.Module):
             # One-hot encoding of indices
             encodings = F.one_hot(flat_indices, num_classes=self.codebook_size).float()
 
-            # Update cluster sizes
+            # Exponential moving averages for counts and sums
             self.cluster_size[level] = self.cluster_size[level] * self.ema_decay + (
                 1 - self.ema_decay
             ) * encodings.sum(0)
 
-            # Update embedding averages
             dw = torch.matmul(encodings.t(), flat_x)
             self.embed_avg[level] = (
                 self.embed_avg[level] * self.ema_decay + (1 - self.ema_decay) * dw
             )
 
-            # Normalize embeddings
-            n = self.cluster_size[level].sum()
-            cluster_size = (self.cluster_size[level] + 1e-5) / (
-                n + 1e-5 * self.codebook_size
-            )
+            # Normalize with Laplace smoothing using counts (not probabilities)
+            eps = 1e-5
+            cluster_size = self.cluster_size[level] + eps  # [K]
             embed_normalized = self.embed_avg[level] / cluster_size.unsqueeze(1)
 
-            # Update codebook weights
-            emb.weight.data.copy_(embed_normalized)
+            # Only update entries that received assignments to avoid blow-ups
+            assigned = (self.cluster_size[level] > 0)
+            if assigned.any():
+                new_weights = emb.weight.data
+                new_weights[assigned] = embed_normalized[assigned]
+                emb.weight.data.copy_(new_weights)
 
         return quantized, indices, probs
 
