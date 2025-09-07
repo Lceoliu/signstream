@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Tuple, Any
 import logging
 from pathlib import Path
 
+from .transforms import *
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +25,7 @@ class CSLDailyDataset(Dataset):
         split: str = "train",
         chunk_len: int = 10,
         fps: int = 30,
-        normalize: bool = True,
+        # normalize: bool = True,
         augment: bool = False,
         augment_config: Optional[Dict] = None,
         body_part_indices: Optional[Dict] = None,
@@ -49,7 +51,7 @@ class CSLDailyDataset(Dataset):
         self.split = split
         self.chunk_len = chunk_len
         self.fps = fps
-        self.normalize = normalize
+        # self.normalize = normalize
         self.augment = augment and split == "train"
         self.augment_config = augment_config or {}
         self.max_seq_len = max_seq_len
@@ -131,9 +133,6 @@ class CSLDailyDataset(Dataset):
         # Load pose sequence
         poses = np.load(sample_info['pose_file'])  # Shape: [T, 134, 3]
 
-        # Remove video dimensions (first keypoint)
-        poses = poses[:, 1:, :]  # Shape: [T, 133, 3]
-
         # Apply max sequence length if specified
         if self.max_seq_len and len(poses) > self.max_seq_len:
             poses = poses[: self.max_seq_len]
@@ -141,28 +140,11 @@ class CSLDailyDataset(Dataset):
         # Convert to torch tensor
         poses = torch.from_numpy(poses).float()
 
-        # Normalize if requested
-        if self.normalize:
-            poses = self._normalize_poses(poses)
-
         # Apply augmentation if in training mode
         if self.augment:
             poses = self._augment_poses(poses)
 
-        # Split into body parts
-        body_parts = self._split_body_parts(poses)
-
-        # Filter out low-confidence keypoints
-        for part_name, part_poses in body_parts.items():
-            confidence = part_poses[:, :, 2]
-            mask = confidence >= self.confidence_threshold
-            part_poses[~mask] = 0.0
-            body_parts[part_name] = part_poses
-
-        # Normalize bounding box poses
-        for part_name, part_poses in body_parts.items():
-            part_poses = self._normalize_bbox_poses(part_poses)
-            body_parts[part_name] = part_poses
+        body_parts = process_all(poses, self.fps, self.confidence_threshold)
 
         # Chunk the sequences
         chunked_parts = self._chunk_sequences(body_parts)
@@ -178,55 +160,6 @@ class CSLDailyDataset(Dataset):
         }
 
         return output
-
-    def _normalize_poses(self, poses: torch.Tensor) -> torch.Tensor:
-        """Normalize poses using eye distance as unit length."""
-        # Calculate normalization scale (eye distance)
-        left_eye_dist = torch.norm(
-            poses[:, self.left_eye_indices[1] - 1]
-            - poses[:, self.left_eye_indices[0] - 1],
-            dim=-1,
-            keepdim=True,
-        )
-        right_eye_dist = torch.norm(
-            poses[:, self.right_eye_indices[1] - 1]
-            - poses[:, self.right_eye_indices[0] - 1],
-            dim=-1,
-            keepdim=True,
-        )
-
-        # Average eye distance as unit length
-        unit_length = (left_eye_dist + right_eye_dist) / 2.0
-        unit_length = unit_length.clamp(min=1e-6).unsqueeze(1)  # Avoid division by zero
-
-        # Normalize positions (keep confidence scores unchanged)
-        poses_normalized = poses.clone()
-        poses_normalized[:, :, :2] = poses[:, :, :2] / unit_length
-
-        return poses_normalized
-
-    def _normalize_bbox_poses(
-        self, poses: torch.Tensor, bbox_range: int = 8
-    ) -> torch.Tensor:
-        """Normalize poses to a [-bbox_range, box_range] square based on bounding box."""
-        # Calculate bounding box
-        x_min = torch.min(poses[:, :, 0], dim=0).values
-        x_max = torch.max(poses[:, :, 0], dim=0).values
-        y_min = torch.min(poses[:, :, 1], dim=0).values
-        y_max = torch.max(poses[:, :, 1], dim=0).values
-
-        bbox_width = x_max - x_min
-        bbox_height = y_max - y_min
-
-        # Use the larger dimension as unit length
-        unit_length = torch.max(bbox_width, bbox_height).clamp(min=1e-6)
-        unit_length = unit_length.view(1, -1, 1)
-
-        # Normalize positions (keep confidence scores unchanged)
-        poses_normalized = poses.clone()
-        poses_normalized[:, :, :2] = poses[:, :, :2] / unit_length * bbox_range
-
-        return poses_normalized
 
     def _augment_poses(self, poses: torch.Tensor) -> torch.Tensor:
         """Apply data augmentation to poses."""
@@ -295,52 +228,16 @@ class CSLDailyDataset(Dataset):
         poses[:, :, 2] = poses[:, :, 2] * dropout_mask.float()
         return poses
 
-    def _split_body_parts(self, poses: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Split pose sequence into body parts."""
-        body_parts = {}
-
-        for part_name, (start_idx, end_idx) in self.body_part_indices.items():
-            if part_name == 'full_body':
-                # Full body includes all keypoints
-                part_poses = poses
-            else:
-                # Extract specific body part keypoints
-                part_poses = poses[:, start_idx - 1 : end_idx, :]
-
-            # Center the body part if normalize is enabled
-            if self.normalize and part_name != 'full_body':
-                center_idx = self.center_indices.get(part_name)
-                if center_idx:
-                    # Convert to local coordinates
-                    if part_name in ['left_hand', 'right_hand']:
-                        # For hands, center is the first point of the part
-                        center = part_poses[:, 0:1, :2]
-                    elif part_name == 'face':
-                        # For face, use the specified center point
-                        center_local_idx = center_idx - (start_idx - 1)
-                        center = part_poses[
-                            :, center_local_idx : center_local_idx + 1, :2
-                        ]
-                    else:
-                        # For body, use the specified center point
-                        center = poses[:, center_idx - 1 : center_idx, :2]
-
-                    part_poses_centered = part_poses.clone()
-                    part_poses_centered[:, :, :2] = part_poses[:, :, :2] - center
-                    part_poses = part_poses_centered
-
-            body_parts[part_name] = part_poses
-
-        return body_parts
-
     def _chunk_sequences(
         self, body_parts: Dict[str, torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
         """Chunk sequences into fixed-length segments."""
         chunked_parts = {}
 
-        for part_name, part_poses in body_parts.items():
-            T = part_poses.shape[0]
+        for part_name, part_infos in body_parts.items():
+            part_poses = part_infos['pose']  # Shape: [T, N, 3]
+            T = part_infos['pose'].shape[0]
+            part_velocities = part_infos['velocity']  # Shape: [T, N, 2]
 
             # Calculate number of chunks
             num_chunks = (T + self.chunk_len - 1) // self.chunk_len
@@ -349,10 +246,24 @@ class CSLDailyDataset(Dataset):
             pad_len = num_chunks * self.chunk_len - T
             if pad_len > 0:
                 padding = part_poses[-1:].repeat(pad_len, 1, 1)
+                padding_vel = torch.zeros(pad_len, part_poses.shape[1], 2)
                 part_poses = torch.cat([part_poses, padding], dim=0)
+                part_velocities = torch.cat([part_velocities, padding_vel], dim=0)
 
             # Reshape into chunks
             chunked = part_poses.reshape(num_chunks, self.chunk_len, -1, 3)
+            chunked_vel = part_velocities.reshape(num_chunks, self.chunk_len, -1, 2)
+            # Combine pose and velocity (optional) -> [T, N, 5]
+            chunked = torch.cat(
+                [
+                    chunked,
+                    torch.cat(
+                        [chunked_vel, torch.zeros_like(chunked_vel[..., :1])], dim=-1
+                    ),
+                ],
+                dim=-1,
+            )
+            chunked = chunked.reshape(num_chunks, self.chunk_len, -1, 5)
             chunked_parts[part_name] = chunked
 
         return chunked_parts
@@ -383,7 +294,7 @@ class CSLDailyDataModule:
                 split='train',
                 chunk_len=self.data_config['chunk_len'],
                 fps=self.data_config['fps'],
-                normalize=self.data_config['normalize']['center_parts'],
+                # normalize=self.data_config['normalize']['center_parts'],
                 augment=True,
                 augment_config=self.data_config['augment'],
                 body_part_indices=self.data_config['body_parts'],
@@ -397,7 +308,7 @@ class CSLDailyDataModule:
                 split='val',
                 chunk_len=self.data_config['chunk_len'],
                 fps=self.data_config['fps'],
-                normalize=self.data_config['normalize']['center_parts'],
+                # normalize=self.data_config['normalize']['center_parts'],
                 augment=False,
                 body_part_indices=self.data_config['body_parts'],
                 center_indices=self.data_config['center_indices'],
@@ -411,7 +322,7 @@ class CSLDailyDataModule:
                 split='test',
                 chunk_len=self.data_config['chunk_len'],
                 fps=self.data_config['fps'],
-                normalize=self.data_config['normalize']['center_parts'],
+                # normalize=self.data_config['normalize']['center_parts'],
                 augment=False,
                 body_part_indices=self.data_config['body_parts'],
                 center_indices=self.data_config['center_indices'],

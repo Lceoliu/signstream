@@ -41,11 +41,11 @@ class RVQModel(nn.Module):
             temporal_aggregation: How to aggregate temporal dimension ("mean", "max", "attention")
         """
         super().__init__()
-        
+
         self.latent_dim = latent_dim
         self.chunk_len = chunk_len
         self.arch = arch
-        
+
         # Shared encoder for all body parts
         self.encoder = PoseEncoder(
             latent_dim=latent_dim,
@@ -56,7 +56,7 @@ class RVQModel(nn.Module):
             dropout=dropout,
             temporal_aggregation=temporal_aggregation,
         )
-        
+
         # RVQ quantizer (shared across body parts)
         self.quantizer = ResidualVectorQuantizer(
             dim=latent_dim,
@@ -66,7 +66,7 @@ class RVQModel(nn.Module):
             ema_decay=ema_decay,
             usage_reg=usage_reg,
         )
-        
+
         # Shared decoder for all body parts
         self.decoder = PoseDecoder(
             latent_dim=latent_dim,
@@ -80,14 +80,14 @@ class RVQModel(nn.Module):
     def forward(self, x: torch.Tensor, part: str):
         """
         Forward pass: encode, quantize and decode pose chunks for a specific body part.
-        
+
         Args:
             x: Input pose tensor of shape [B, L, F] where:
                 - B: batch size
                 - L: chunk length (frames)
-                - F: frame dimension (keypoints * 3)
+                - F: frame dimension (keypoints * 5: x, y, confidence, vx, vy)
             part: Body part name ("face", "left_hand", "right_hand", "body", "full_body")
-            
+
         Returns:
             recon: Reconstructed pose tensor, same shape as input
             codes: Quantization codes, shape [B, levels]
@@ -98,16 +98,16 @@ class RVQModel(nn.Module):
         # Validate part
         if part not in PART_DIMENSIONS:
             raise ValueError(f"Unknown body part: {part}. Available: {list(PART_DIMENSIONS.keys())}")
-        
+
         # Encode: [B, L, F] -> [B, D]
         z = self.encoder(x, part)
-        
+
         # Quantize: [B, D] -> [B, D], codes, losses
         z_q, codes, q_loss, usage_loss = self.quantizer(z)
-        
+
         # Decode: [B, D] -> [B, L, F]
         recon = self.decoder(z_q, part)
-        
+
         return recon, codes, q_loss, usage_loss, z_q
 
     def encode_only(self, x: torch.Tensor, part: str) -> torch.Tensor:

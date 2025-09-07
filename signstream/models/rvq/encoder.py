@@ -102,11 +102,11 @@ class PoseEncoder(nn.Module):
         self.chunk_len = chunk_len
         self.latent_dim = latent_dim
         self.temporal_aggregation = temporal_aggregation
-        
+
         # Input projection layers for each body part (different input dimensions)
         self.input_projections = nn.ModuleDict()
         for part_name, num_keypoints in PART_DIMENSIONS.items():
-            frame_dim = num_keypoints * 3  # x, y, confidence
+            frame_dim = num_keypoints * 5  # x, y, confidence, vx, vy
             if arch == "mlp":
                 # For MLP: flatten temporal dimension
                 self.input_projections[part_name] = nn.Linear(
@@ -115,7 +115,7 @@ class PoseEncoder(nn.Module):
             else:
                 # For transformer: project per-frame
                 self.input_projections[part_name] = nn.Linear(frame_dim, latent_dim)
-        
+
         # Shared backbone
         self.backbone = SharedPoseBackbone(
             latent_dim=latent_dim,
@@ -123,21 +123,21 @@ class PoseEncoder(nn.Module):
             arch=arch,
             dropout=dropout,
         )
-        
+
         # Type embeddings for different body parts
         self.type_embed = nn.Embedding(len(PART_TYPES), latent_dim)
-        
+
         # Positional embeddings for transformer
         if arch == "transformer":
             self.pos_embed = nn.Parameter(torch.zeros(chunk_len, latent_dim))
-            
+
         # Temporal attention for aggregation
         if temporal_aggregation == "attention":
             self.temporal_attention = nn.MultiheadAttention(
                 latent_dim, num_heads=4, batch_first=True
             )
             self.cls_token = nn.Parameter(torch.randn(1, 1, latent_dim))
-        
+
         # Layer normalization
         self.layer_norm = nn.LayerNorm(latent_dim)
 
@@ -145,19 +145,19 @@ class PoseEncoder(nn.Module):
         """Get input dimension for a specific body part."""
         if part not in PART_DIMENSIONS:
             raise ValueError(f"Unknown body part: {part}")
-        return PART_DIMENSIONS[part] * 3  # x, y, confidence
+        return PART_DIMENSIONS[part] * 5  # x, y, confidence, vx, vy
 
     def _validate_input_shape(self, x: torch.Tensor, part: str) -> None:
         """Validate input tensor shape for the given body part."""
         expected_frame_dim = self._get_part_input_dim(part)
-        
+
         if len(x.shape) != 3:
             raise ValueError(f"Expected 3D input [B, L, F], got {x.shape}")
-        
+
         B, L, F = x.shape
         if L != self.chunk_len:
             raise ValueError(f"Expected chunk_len={self.chunk_len}, got L={L}")
-        
+
         if F != expected_frame_dim:
             raise ValueError(
                 f"Expected frame_dim={expected_frame_dim} for {part}, got F={F}"
@@ -173,7 +173,7 @@ class PoseEncoder(nn.Module):
             # Use attention with a learnable CLS token
             B = h.shape[0]
             cls_tokens = self.cls_token.expand(B, -1, -1)  # [B, 1, D]
-            
+
             # Attention: CLS token attends to all temporal positions
             attended, _ = self.temporal_attention(cls_tokens, h, h)
             return attended.squeeze(1)  # [B, 1, D] -> [B, D]
@@ -195,49 +195,49 @@ class PoseEncoder(nn.Module):
         """
         # Validate input
         self._validate_input_shape(x, part)
-        
+
         B, L, F = x.shape
-        
+
         # Get type embedding
         part_id = torch.full(
             (B,), PART_TYPES[part], dtype=torch.long, device=x.device
         )
         type_emb = self.type_embed(part_id)  # [B, D]
-        
+
         # Input projection (different for each body part)
         if self.arch == "mlp":
             # Flatten temporal dimension and project
             x_flat = x.view(B, -1)  # [B, L*F]
             h = self.input_projections[part](x_flat)  # [B, D]
-            
+
             # Add type embedding
             h = h + type_emb  # [B, D]
-            
+
             # Pass through shared backbone
             h = self.backbone(h)  # [B, D]
-            
+
             # Layer norm
             h = self.layer_norm(h)
-            
+
         elif self.arch == "transformer":
             # Project each frame
             h = self.input_projections[part](x)  # [B, L, D]
-            
+
             # Add positional embeddings
             h = h + self.pos_embed[:L].unsqueeze(0)  # [B, L, D]
-            
+
             # Add type embeddings (broadcast across time)
             h = h + type_emb.unsqueeze(1)  # [B, L, D]
-            
+
             # Pass through shared backbone
             h = self.backbone(h)  # [B, L, D]
-            
+
             # Temporal aggregation
             h = self._aggregate_temporal(h)  # [B, D]
-            
+
             # Layer norm
             h = self.layer_norm(h)
-        
+
         return h
 
     def get_part_frame_dim(self, part: str) -> int:
