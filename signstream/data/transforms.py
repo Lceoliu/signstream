@@ -15,6 +15,7 @@ __all__ = [
 import torch
 from typing import Literal, Optional, Tuple, List, Dict
 from dataclasses import dataclass
+import numpy as np
 
 COCO_EDGES = {
     'body': [
@@ -530,7 +531,7 @@ def process_all(
     elif K == 133:
         video_size = (512, 512)
 
-    if isinstance(pose, np.array):
+    if isinstance(pose, np.ndarray):
         pose = torch.from_numpy(pose).float()
     device, dtype = pose.device, pose.dtype
     pose_norm, _ = normalize_by_global_bbox(
@@ -612,10 +613,23 @@ def process_all(
             }
         }
         """
-        part_E2 = torch.tensor(
-            COCO_EDGES[part],
-            dtype=torch.long,
-            device=device,
+        part_E2 = (
+            torch.tensor(
+                COCO_EDGES[part],
+                dtype=torch.long,
+                device=device,
+            )
+            if part != 'full_body'
+            else torch.tensor(
+                (
+                    COCO_EDGES['body']
+                    + COCO_EDGES['face']
+                    + COCO_EDGES['left_hand']
+                    + COCO_EDGES['right_hand']
+                ),
+                dtype=torch.long,
+                device=device,
+            )
         )
         for e in range(part_E2.shape[0]):
             part_E2[e, 0] -= BODY_PARTS_INTERVALS[part][0]

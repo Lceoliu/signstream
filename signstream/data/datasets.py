@@ -253,17 +253,30 @@ class CSLDailyDataset(Dataset):
             # Reshape into chunks
             chunked = part_poses.reshape(num_chunks, self.chunk_len, -1, 3)
             chunked_vel = part_velocities.reshape(num_chunks, self.chunk_len, -1, 2)
+            assert chunked_vel.shape == (
+                num_chunks,
+                self.chunk_len,
+                part_poses.shape[1],
+                2,
+            ), f"Unexpected velocity chunk shape: {chunked_vel.shape}, expected ({num_chunks}, {self.chunk_len}, {part_poses.shape[1]}, 2)"
             # Combine pose and velocity (optional) -> [T, N, 5]
             chunked = torch.cat(
                 [
                     chunked,
-                    torch.cat(
-                        [chunked_vel, torch.zeros_like(chunked_vel[..., :1])], dim=-1
-                    ),
+                    # torch.cat(
+                    #     [chunked_vel, torch.zeros_like(chunked_vel[..., :1])], dim=-1
+                    # ),
+                    chunked_vel,
                 ],
                 dim=-1,
             )
-            chunked = chunked.reshape(num_chunks, self.chunk_len, -1, 5)
+            # chunked = chunked.reshape(num_chunks, self.chunk_len, -1, 5)
+            assert chunked.shape == (
+                num_chunks,
+                self.chunk_len,
+                part_poses.shape[1],
+                5,
+            ), f"Unexpected chunk shape: {chunked.shape}, expected ({num_chunks}, {self.chunk_len}, {part_poses.shape[1]}, 5)"
             chunked_parts[part_name] = chunked
 
         return chunked_parts

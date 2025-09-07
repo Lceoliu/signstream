@@ -129,29 +129,29 @@ def create_datasets(config: dict):
             split="train",
             chunk_len=config["data"]["chunk_len"],
             fps=config["data"]["fps"],
-            normalize=config["data"]["normalize"]["center_parts"],
+            # normalize=config["data"]["normalize"]["center_parts"],
             augment=True,
             augment_config=config["data"]["augment"],
             body_part_indices=config["data"]["body_parts"],
             center_indices=config["data"]["center_indices"],
         )
-        
+
         val_dataset = CSLDailyDataset(
-            root_dir=config["data"]["root"], 
+            root_dir=config["data"]["root"],
             split="val",
             chunk_len=config["data"]["chunk_len"],
             fps=config["data"]["fps"],
-            normalize=config["data"]["normalize"]["center_parts"],
+            # normalize=config["data"]["normalize"]["center_parts"],
             augment=False,
             body_part_indices=config["data"]["body_parts"],
             center_indices=config["data"]["center_indices"],
         )
-        
+
     except (FileNotFoundError, ValueError) as e:
         logger.warning(f"Could not load real dataset: {e}")
         train_dataset = create_dummy_dataset(config)
         val_dataset = create_dummy_dataset(config)
-    
+
     return train_dataset, val_dataset
 
 
