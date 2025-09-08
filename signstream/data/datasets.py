@@ -171,6 +171,10 @@ class CSLDailyDataset(Dataset):
             'num_chunks': chunked_parts['face'].shape[0],
         }
 
+        # Clean up intermediate tensors to prevent memory accumulation
+        del poses
+        del body_parts
+
         return output
 
     def _chunk_sequences_sliding(
@@ -454,7 +458,7 @@ class CSLDailyDataModule:
 
     @staticmethod
     def collate_fn(batch: List[Dict]) -> Dict[str, Any]:
-        """Custom collate function for batching."""
+        """Custom collate function for batching with memory optimization."""
         # Find max number of chunks in batch
         max_chunks = max(sample['num_chunks'] for sample in batch)
 
@@ -466,27 +470,37 @@ class CSLDailyDataModule:
             part_chunks = []
             for sample in batch:
                 chunks = sample['chunks'][part]
-                # Pad to max_chunks if necessary
+                # Pad to max_chunks if necessary - use efficient padding
                 if chunks.shape[0] < max_chunks:
-                    pad_shape = list(chunks.shape)
-                    pad_shape[0] = max_chunks - chunks.shape[0]
-                    padding = torch.zeros(pad_shape)
+                    pad_len = max_chunks - chunks.shape[0]
+                    # Create padding tensor with same dtype/device, more efficient
+                    padding = torch.zeros(
+                        (pad_len,) + chunks.shape[1:], 
+                        dtype=chunks.dtype, 
+                        device=chunks.device
+                    )
                     chunks = torch.cat([chunks, padding], dim=0)
                 part_chunks.append(chunks)
 
+            # Stack with explicit memory cleanup
             batched_chunks[part] = torch.stack(part_chunks)
+            # Explicitly delete intermediate list to free memory
+            del part_chunks
 
         # Create attention mask
         chunk_mask = torch.zeros(len(batch), max_chunks, dtype=torch.bool)
         for i, sample in enumerate(batch):
             chunk_mask[i, : sample['num_chunks']] = True
 
-        return {
+        # Create result dict with explicit tensor creation
+        result = {
             'chunks': batched_chunks,
             'chunk_mask': chunk_mask,
             'names': [s['name'] for s in batch],
             'texts': [s['text'] for s in batch],
             'glosses': [s['gloss'] for s in batch],
-            'num_frames': torch.tensor([s['num_frames'] for s in batch]),
-            'num_chunks': torch.tensor([s['num_chunks'] for s in batch]),
+            'num_frames': torch.tensor([s['num_frames'] for s in batch], dtype=torch.long),
+            'num_chunks': torch.tensor([s['num_chunks'] for s in batch], dtype=torch.long),
         }
+        
+        return result

@@ -650,6 +650,14 @@ def process_all(
     formatted_parts = {}
     for part in ['body', 'face', 'left_hand', 'right_hand', 'full_body']:
         formatted_parts[part] = get_format_part(part, parts, velocity)
+    
+    # Clean up intermediate tensors to prevent memory accumulation
+    del velocity
+    del parts
+    del pose_norm
+    del pose_interp
+    del fill_mask
+    
     return formatted_parts
 
 

@@ -224,23 +224,25 @@ def main():
     logger.info(f"Train dataset: {len(train_dataset)} samples")
     logger.info(f"Validation dataset: {len(val_dataset)} samples")
     
-    # Create data loaders
+    # Create data loaders with memory-optimized settings
     train_loader = DataLoader(
         train_dataset,
         batch_size=config["training"]["batch_size"],
         shuffle=True,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=2,  # Reduced from 4 to prevent memory fragmentation
+        pin_memory=False,  # Disabled to reduce GPU memory pressure
         collate_fn=CSLDailyDataModule.collate_fn,
+        persistent_workers=False,  # Prevent worker memory retention
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=config["training"]["batch_size"],
         shuffle=False,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=2,  # Reduced from 4
+        pin_memory=False,  # Disabled 
         collate_fn=CSLDailyDataModule.collate_fn,
+        persistent_workers=False,  # Prevent worker memory retention
     )
     
     # Create model
