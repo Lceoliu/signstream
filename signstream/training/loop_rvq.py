@@ -349,6 +349,11 @@ class RVQTrainingLoop:
                 )
                 codebook_metrics[part] = part_metrics
 
+        # Free GPU/CPU caches after validation to prevent memory growth across epochs
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return epoch_metrics, codebook_metrics
 
     def sample_tokens(self, epoch: int) -> Dict[str, List]:

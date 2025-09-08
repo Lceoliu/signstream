@@ -98,13 +98,19 @@ def create_dummy_dataset(config: dict, rank: int) -> CSLDailyDataset:
             # Override initialization to avoid file system checks
             self.chunk_len = kwargs['chunk_len']
             self.normalize = kwargs.get('normalize', True)
-            self.augment = kwargs.get('augment', False)
+            self.augment = False
             self.body_part_indices = {
                 'face': (24, 91),
                 'left_hand': (92, 112), 
                 'right_hand': (113, 133),
                 'body': (1, 17),
                 'full_body': (1, 133),
+            }
+            self.center_indices = {
+                'body': 1,
+                'face': 32,
+                'left_hand': 92,
+                'right_hand': 113,
             }
             # Create dummy data
             self.valid_samples = []
@@ -137,7 +143,6 @@ def create_dummy_dataset(config: dict, rank: int) -> CSLDailyDataset:
         root_dir=config["data"]["root"],
         chunk_len=config["data"]["chunk_len"],
         fps=config["data"]["fps"],
-        augment=kwargs.get('augment', False),
     )
 
 
@@ -150,19 +155,17 @@ def create_datasets(config: dict, rank: int):
             split="train",
             chunk_len=config["data"]["chunk_len"],
             fps=config["data"]["fps"],
-            normalize=config["data"]["normalize"]["center_parts"],
             augment=True,
             augment_config=config["data"]["augment"],
             body_part_indices=config["data"]["body_parts"],
             center_indices=config["data"]["center_indices"],
         )
-        
+
         val_dataset = CSLDailyDataset(
-            root_dir=config["data"]["root"], 
+            root_dir=config["data"]["root"],
             split="val",
             chunk_len=config["data"]["chunk_len"],
             fps=config["data"]["fps"],
-            normalize=config["data"]["normalize"]["center_parts"],
             augment=False,
             body_part_indices=config["data"]["body_parts"],
             center_indices=config["data"]["center_indices"],
@@ -179,31 +182,29 @@ def create_datasets(config: dict, rank: int):
 
 
 def create_model(config: dict, device: torch.device, rank: int) -> RVQModel:
-    """Create RVQ model based on configuration."""
-    
-    # Calculate frame dimensions for full_body (default)
-    body_parts = config["data"]["body_parts"]
-    start, end = body_parts['full_body']
-    num_points = end - start + 1
-    frame_dim = num_points * 3
-    
+    """Create RVQ model based on configuration (mirrors single-GPU)."""
+
     model = RVQModel(
-        frame_dim=frame_dim,
-        chunk_len=config["data"]["chunk_len"],
         latent_dim=config["model"]["latent_dim"],
+        chunk_len=config["data"]["chunk_len"],
         codebook_size=config["model"]["rvq"]["codebook_size"],
         levels=config["model"]["rvq"]["levels"],
         commitment_beta=config["model"]["rvq"]["commitment_beta"],
         ema_decay=config["model"]["rvq"]["ema_decay"],
         usage_reg=config["model"]["rvq"]["usage_reg"],
         arch=config["model"]["arch"],
+        num_layers=config["model"].get("encoder_layer", 2),
+        type_embed_dim=config["model"].get("type_embed_dim", 16),
+        dropout=config["model"].get("dropout", 0.1),
+        temporal_aggregation=config["model"].get("temporal_aggregation", "mean"),
     )
-    
+
     model.to(device)
-    
+
     if rank == 0:
-        logger.info(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
-    
+        total_params = sum(p.numel() for p in model.parameters())
+        logger.info(f"Model created with {total_params} parameters")
+
     return model
 
 
