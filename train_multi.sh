@@ -32,6 +32,8 @@ if [ ! -z "$CONDA_ENV" ]; then
     conda activate $CONDA_ENV
 fi
 
+export PYTHONPATH=$(pwd):$PYTHONPATH
+
 # Run DDP training
 torchrun \
     --nproc_per_node=$NUM_GPUS \
