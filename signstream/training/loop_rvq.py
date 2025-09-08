@@ -225,10 +225,39 @@ class RVQTrainingLoop:
 
             # Log batch progress
             if batch_idx % 100 == 0:
+                total_loss_val = float(total_loss.detach().item())
                 logger.info(
                     f"Epoch {epoch}, Batch {batch_idx}/{total_batches}, "
-                    f"Total Loss: {total_loss.item():.4f}"
+                    f"Total Loss: {total_loss_val:.4f}"
                 )
+
+            # Explicitly delete per-batch tensors and periodically clear cache
+            try:
+                del x_seq
+            except Exception:
+                pass
+            try:
+                del x_seq_all
+            except Exception:
+                pass
+            try:
+                del recon
+            except Exception:
+                pass
+            try:
+                del codes
+            except Exception:
+                pass
+            try:
+                del z_q
+            except Exception:
+                pass
+            try:
+                del loss_r, q_loss, usage_loss, loss_t
+            except Exception:
+                pass
+            if torch.cuda.is_available() and (batch_idx % 100 == 0):
+                torch.cuda.empty_cache()
 
         # Average metrics over batches
         for part in self.body_parts:
@@ -324,6 +353,32 @@ class RVQTrainingLoop:
                     if part in batch_metrics:
                         for metric_name, value in batch_metrics[part].items():
                             epoch_metrics[part][metric_name] += value
+
+                # Explicitly delete per-batch tensors to reduce peak memory during validation
+                try:
+                    del x_seq
+                except Exception:
+                    pass
+                try:
+                    del x_seq_all
+                except Exception:
+                    pass
+                try:
+                    del recon
+                except Exception:
+                    pass
+                try:
+                    del codes
+                except Exception:
+                    pass
+                try:
+                    del z_q
+                except Exception:
+                    pass
+                try:
+                    del loss_r, q_loss, usage_loss, loss_t
+                except Exception:
+                    pass
 
         # Average metrics
         num_batches = len(self.val_loader)
