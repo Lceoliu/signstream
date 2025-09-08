@@ -28,6 +28,7 @@
 
 ## Commit & Pull Request Guidelines
 
+- **Record Keeping**: Keep a brief changelog in `CHANGELOG.md` for significant changes. Write your reason and motivation for every changes you made.
 - Commits: imperative mood, concise subject (<72 chars), include rationale in body.
 - Prefer Conventional Commits when helpful: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
 - PRs: clear description, linked issues, reproduction or usage steps, sample commands, and before/after metrics (loss, utilization) when training is affected.
