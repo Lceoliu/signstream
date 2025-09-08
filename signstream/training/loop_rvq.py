@@ -231,43 +231,43 @@ class RVQTrainingLoop:
                     f"Total Loss: {total_loss_val:.4f}"
                 )
 
-            # Explicitly delete per-batch tensors and periodically clear cache
-            try:
-                del x_seq
-            except Exception:
-                pass
-            try:
-                del x_seq_all
-            except Exception:
-                pass
-            try:
-                del recon
-            except Exception:
-                pass
-            try:
-                del codes
-            except Exception:
-                pass
-            try:
-                del z_q
-            except Exception:
-                pass
-            try:
-                del loss_r, q_loss, usage_loss, loss_t
-            except Exception:
-                pass
-            if torch.cuda.is_available() and (batch_idx % 100 == 0):
-                torch.cuda.empty_cache()
+            # # Explicitly delete per-batch tensors and periodically clear cache
+            # try:
+            #     del x_seq
+            # except Exception:
+            #     pass
+            # try:
+            #     del x_seq_all
+            # except Exception:
+            #     pass
+            # try:
+            #     del recon
+            # except Exception:
+            #     pass
+            # try:
+            #     del codes
+            # except Exception:
+            #     pass
+            # try:
+            #     del z_q
+            # except Exception:
+            #     pass
+            # try:
+            #     del loss_r, q_loss, usage_loss, loss_t
+            # except Exception:
+            #     pass
+            # if torch.cuda.is_available() and (batch_idx % 100 == 0):
+            #     torch.cuda.empty_cache()
 
         # Average metrics over batches
         for part in self.body_parts:
             for metric_name in epoch_metrics[part]:
                 epoch_metrics[part][metric_name] /= total_batches
 
-        # gc to free memory
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # # gc to free memory
+        # gc.collect()
+        # if torch.cuda.is_available():
+        #     torch.cuda.empty_cache()
 
         return epoch_metrics
 
@@ -506,6 +506,12 @@ class RVQTrainingLoop:
             if epoch % self.sample_every == 0:
                 token_samples = self.sample_tokens(epoch)
                 self._log_token_samples(epoch, token_samples)
+
+            # Free caches
+            del train_metrics, val_metrics, codebook_metrics, all_metrics
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _log_metrics(
         self, epoch: int, train_metrics: Dict, val_metrics: Dict, codebook_metrics: Dict
