@@ -32,6 +32,8 @@ class CSLDailyDataset(Dataset):
         center_indices: Optional[Dict] = None,
         max_seq_len: Optional[int] = None,
         confidence_threshold: float = 0.1,
+        chunk_stride: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
     ):
         """
         Args:
@@ -49,13 +51,20 @@ class CSLDailyDataset(Dataset):
         """
         self.root_dir = Path(root_dir)
         self.split = split
-        self.chunk_len = chunk_len
+        self.chunk_len = int(chunk_len)
         self.fps = fps
         # self.normalize = normalize
         self.augment = augment and split == "train"
         self.augment_config = augment_config or {}
         self.max_seq_len = max_seq_len
         self.confidence_threshold = confidence_threshold
+        # Sliding window controls (default: no overlap)
+        if chunk_stride is not None:
+            self.chunk_stride = int(chunk_stride)
+        elif chunk_overlap is not None:
+            self.chunk_stride = max(1, int(self.chunk_len) - int(chunk_overlap))
+        else:
+            self.chunk_stride = int(self.chunk_len)
 
         # Body part configuration (COCO WholeBody format)
         self.body_part_indices = body_part_indices or {
@@ -146,8 +155,11 @@ class CSLDailyDataset(Dataset):
 
         body_parts = process_all(poses, self.fps, self.confidence_threshold)
 
-        # Chunk the sequences
-        chunked_parts = self._chunk_sequences(body_parts)
+        # Chunk the sequences (support sliding window if stride < chunk_len)
+        if getattr(self, 'chunk_stride', self.chunk_len) != self.chunk_len:
+            chunked_parts = self._chunk_sequences_sliding(body_parts)
+        else:
+            chunked_parts = self._chunk_sequences(body_parts)
 
         # Prepare output
         output = {
@@ -160,6 +172,65 @@ class CSLDailyDataset(Dataset):
         }
 
         return output
+
+    def _chunk_sequences_sliding(
+        self, body_parts: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Chunk sequences with sliding window (overlap) into fixed-length segments.
+
+        Uses window length `self.chunk_len` and stride `self.chunk_stride`.
+        Pads the tail of each chunk with the last available frame (pose),
+        and zeros for velocities, to reach full window length.
+        """
+        chunked_parts: Dict[str, torch.Tensor] = {}
+
+        win = int(self.chunk_len)
+        stride = int(self.chunk_stride)
+
+        for part_name, part_infos in body_parts.items():
+            part_poses = part_infos['pose']  # [T, K, 3]
+            part_velocities = part_infos['velocity']  # [T, K, 2]
+            T, K, _ = part_poses.shape
+
+            # Determine window starts; ensure coverage of tail
+            starts = list(range(0, max(T - win + 1, 1), stride))
+            if not starts:
+                starts = [0]
+            last_start = starts[-1]
+            if last_start + win < T:
+                starts.append(max(0, T - win))
+
+            pose_chunks = []
+            vel_chunks = []
+            for s in starts:
+                e = s + win
+                pose_slice = part_poses[s:min(e, T)]
+                vel_slice = part_velocities[s:min(e, T)]
+                cur_len = pose_slice.shape[0]
+
+                if cur_len < win:
+                    pad_t = win - cur_len
+                    if cur_len > 0:
+                        last_pose = pose_slice[-1:].repeat(pad_t, 1, 1)
+                    else:
+                        # Degenerate case: no frames
+                        last_pose = torch.zeros(win, K, 3, device=part_poses.device, dtype=part_poses.dtype)
+                        pose_slice = torch.zeros(0, K, 3, device=part_poses.device, dtype=part_poses.dtype)
+                    pose_slice = torch.cat([pose_slice, last_pose], dim=0)
+
+                    pad_vel = torch.zeros(pad_t, K, 2, device=part_velocities.device, dtype=part_velocities.dtype)
+                    vel_slice = torch.cat([vel_slice, pad_vel], dim=0)
+
+                pose_chunks.append(pose_slice)
+                vel_chunks.append(vel_slice)
+
+            chunked_pose = torch.stack(pose_chunks, dim=0)  # [N, L, K, 3]
+            chunked_vel = torch.stack(vel_chunks, dim=0)    # [N, L, K, 2]
+            chunked = torch.cat([chunked_pose, chunked_vel], dim=-1)  # [N, L, K, 5]
+
+            chunked_parts[part_name] = chunked
+
+        return chunked_parts
 
     def _augment_poses(self, poses: torch.Tensor) -> torch.Tensor:
         """Apply data augmentation to poses."""
@@ -313,6 +384,8 @@ class CSLDailyDataModule:
                 body_part_indices=self.data_config['body_parts'],
                 center_indices=self.data_config['center_indices'],
                 max_seq_len=self.data_config.get('max_seq_len'),
+                chunk_stride=self.data_config.get('chunk_stride'),
+                chunk_overlap=self.data_config.get('chunk_overlap'),
             )
 
             # Validation dataset
@@ -326,6 +399,8 @@ class CSLDailyDataModule:
                 body_part_indices=self.data_config['body_parts'],
                 center_indices=self.data_config['center_indices'],
                 max_seq_len=self.data_config.get('max_seq_len'),
+                chunk_stride=self.data_config.get('chunk_stride'),
+                chunk_overlap=self.data_config.get('chunk_overlap'),
             )
 
         if stage in ('test', None):
@@ -340,6 +415,8 @@ class CSLDailyDataModule:
                 body_part_indices=self.data_config['body_parts'],
                 center_indices=self.data_config['center_indices'],
                 max_seq_len=self.data_config.get('max_seq_len'),
+                chunk_stride=self.data_config.get('chunk_stride'),
+                chunk_overlap=self.data_config.get('chunk_overlap'),
             )
 
     def train_dataloader(self) -> DataLoader:

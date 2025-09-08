@@ -7,6 +7,9 @@ data:
   split_file: "/workspace/data/data_lc/slr_rvq/CSL-Daily/split_files.json"  # Optional split file
   fps: 30
   chunk_len: 10
+  # Optional sliding window controls (use either):
+  # chunk_stride: 10    # stride < chunk_len enables overlap
+  # chunk_overlap: 0    # alternatively specify overlap directly
   max_seq_len: 1000  # Maximum sequence length in frames
   normalize:
     center_parts: true

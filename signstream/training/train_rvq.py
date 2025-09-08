@@ -134,6 +134,8 @@ def create_datasets(config: dict):
             augment_config=config["data"]["augment"],
             body_part_indices=config["data"]["body_parts"],
             center_indices=config["data"]["center_indices"],
+            chunk_stride=config["data"].get("chunk_stride"),
+            chunk_overlap=config["data"].get("chunk_overlap"),
         )
 
         val_dataset = CSLDailyDataset(
@@ -145,6 +147,8 @@ def create_datasets(config: dict):
             augment=False,
             body_part_indices=config["data"]["body_parts"],
             center_indices=config["data"]["center_indices"],
+            chunk_stride=config["data"].get("chunk_stride"),
+            chunk_overlap=config["data"].get("chunk_overlap"),
         )
 
     except (FileNotFoundError, ValueError) as e:

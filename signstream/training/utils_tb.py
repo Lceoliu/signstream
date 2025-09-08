@@ -111,7 +111,9 @@ class RVQTensorBoardLogger:
         self.writer.add_image(f'codebook_utilization/{part_name}', 
                              image_array, step, dataformats='HWC')
         plt.close(fig)
+        image.close()  # Explicitly close PIL image
         buf.close()
+        del image_array, image  # Delete references
     
     def log_usage_histogram(self, codes: torch.Tensor, codebook_size: int, 
                            part_name: str, step: int):
@@ -148,7 +150,9 @@ class RVQTensorBoardLogger:
         self.writer.add_image(f'code_usage/{part_name}', 
                              image_array, step, dataformats='HWC')
         plt.close(fig)
+        image.close()  # Explicitly close PIL image
         buf.close()
+        del image_array, image  # Delete references
     
     def log_loss_components(self, losses: Dict[str, float], part_name: str, step: int):
         """Log different loss components for a body part."""
