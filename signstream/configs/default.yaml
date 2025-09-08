@@ -1,5 +1,5 @@
 # SignStream-RVQ Default Configuration
-experiment_name: "Baseline-Test001"
+experiment_name: "Baseline-Test002"
 save_path: "./checkpoints"
 
 data:
@@ -29,7 +29,7 @@ data:
     time_warp: true
     time_warp_factor: 0.1
     dropout_prob: 0.05
-    confidence_threshold: 0.1
+    confidence_threshold: 0.25
 
 model:
   encoder_layer: 2
@@ -55,7 +55,7 @@ training:
   batch_size: 8
   lr: 0.0001  # Reduced learning rate for stability
   wd: 0.01
-  amp: "bf16"  # fp32, fp16, bf16
+  amp: "fp32"  # fp32, fp16, bf16
   log_wandb: false
   seed: 42
   save_every: 5
@@ -63,7 +63,7 @@ training:
   sample_every: 5  # Sample tokens every N epochs
   num_eval_samples: 5
   # Stability parameters
-  max_grad_norm: 1.0  # Gradient clipping
+  max_grad_norm: 2.0  # Gradient clipping
   loss_scale_factor: 0.1  # Scale loss to prevent explosion
 
 logging:

@@ -8,7 +8,11 @@ from torch.utils.data import DataLoader
 from typing import Dict, Any, List, Tuple
 import logging
 from pathlib import Path
+from tqdm import tqdm
 import numpy as np
+import gc
+
+from .utils_tb import RVQTensorBoardLogger
 
 from ..models.rvq.rvq_model import RVQModel
 from ..models.metrics.codebook import compute_all_codebook_metrics
@@ -30,7 +34,7 @@ class RVQTrainingLoop:
         optimizer: torch.optim.Optimizer,
         device: torch.device,
         config: Dict[str, Any],
-        logger_writer=None,
+        logger_writer: RVQTensorBoardLogger = None,
     ):
         self.model = model
         self.train_loader = train_loader
@@ -88,8 +92,9 @@ class RVQTrainingLoop:
         }
 
         total_batches = len(self.train_loader)
+        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}/{self.epochs}")
 
-        for batch_idx, batch in enumerate(self.train_loader):
+        for batch_idx, batch in enumerate(pbar):
             self.optimizer.zero_grad()
 
             total_loss = 0.0
@@ -219,7 +224,7 @@ class RVQTrainingLoop:
                         epoch_metrics[part][metric_name] += value
 
             # Log batch progress
-            if batch_idx % 50 == 0:
+            if batch_idx % 100 == 0:
                 logger.info(
                     f"Epoch {epoch}, Batch {batch_idx}/{total_batches}, "
                     f"Total Loss: {total_loss.item():.4f}"
@@ -229,6 +234,11 @@ class RVQTrainingLoop:
         for part in self.body_parts:
             for metric_name in epoch_metrics[part]:
                 epoch_metrics[part][metric_name] /= total_batches
+
+        # gc to free memory
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         return epoch_metrics
 
@@ -248,9 +258,10 @@ class RVQTrainingLoop:
 
         # Collect codes for codebook analysis
         all_codes = {part: [] for part in self.body_parts}
+        pbar = tqdm(self.val_loader, desc=f"Validation Epoch {epoch}/{self.epochs}")
 
         with torch.no_grad():
-            for batch_idx, batch in enumerate(self.val_loader):
+            for batch_idx, batch in enumerate(pbar):
                 batch_metrics = {}
 
                 # Process each body part
@@ -499,26 +510,26 @@ class RVQTrainingLoop:
         # Training metrics
         for part, metrics in train_metrics.items():
             for metric_name, value in metrics.items():
-                self.logger_writer.add_scalar(
+                self.logger_writer.log_scalar(
                     f'train/{part}_{metric_name}', value, epoch
                 )
 
         # Validation metrics
         for part, metrics in val_metrics.items():
             for metric_name, value in metrics.items():
-                self.logger_writer.add_scalar(f'val/{part}_{metric_name}', value, epoch)
+                self.logger_writer.log_scalar(f'val/{part}_{metric_name}', value, epoch)
 
         # Codebook metrics
         for part, cb_metrics in codebook_metrics.items():
             overall = cb_metrics['overall']
             for metric_name, value in overall.items():
-                self.logger_writer.add_scalar(
+                self.logger_writer.log_scalar(
                     f'codebook/{part}_{metric_name}', value, epoch
                 )
 
             # Per-level metrics
             for level_name, level_metrics in cb_metrics['per_level'].items():
                 for metric_name, value in level_metrics.items():
-                    self.logger_writer.add_scalar(
+                    self.logger_writer.log_scalar(
                         f'codebook/{part}_{level_name}_{metric_name}', value, epoch
                     )
