@@ -161,7 +161,7 @@ def create_datasets(config: dict):
 
 def create_model(config: dict, device: torch.device) -> RVQModel:
     """Create RVQ model based on configuration."""
-    
+
     # Create model with new shared backbone architecture
     model = RVQModel(
         latent_dim=config["model"]["latent_dim"],
@@ -177,16 +177,15 @@ def create_model(config: dict, device: torch.device) -> RVQModel:
         dropout=config["model"].get("dropout", 0.1),
         temporal_aggregation=config["model"].get("temporal_aggregation", "mean"),
     )
-    
+
     model.to(device)
-    
+
     # Log model information
     model_info = model.get_model_info()
     logger.info(f"Model created with {model_info['total_parameters']} total parameters")
     logger.info(f"Architecture: {model_info['arch']}, Latent dim: {model_info['latent_dim']}")
     logger.info(f"Supported body parts: {model_info['supported_parts']}")
-    logger.info(f"Body part dimensions: {model_info['part_dimensions']}")
-    
+
     return model
 
 

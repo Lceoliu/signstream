@@ -99,14 +99,41 @@ class RVQModel(nn.Module):
         if part not in PART_DIMENSIONS:
             raise ValueError(f"Unknown body part: {part}. Available: {list(PART_DIMENSIONS.keys())}")
 
-        # Encode: [B, L, F] -> [B, D]
-        z = self.encoder(x, part)
+        # Support both 3-channel (x,y,conf) and 5-channel (x,y,conf,vx,vy) inputs
+        B, L, F = x.shape
+        K = PART_DIMENSIONS[part]
+        expect5 = K * 5
+        expect3 = K * 3
+
+        input_was_3ch = False
+        if F == expect5:
+            x5 = x
+        elif F == expect3:
+            # Expand to 5D by appending zero velocities
+            input_was_3ch = True
+            x3 = x.view(B, L, K, 3)
+            zeros_vel = torch.zeros(B, L, K, 2, device=x.device, dtype=x.dtype)
+            x5 = torch.cat([x3, zeros_vel], dim=-1).view(B, L, expect5)
+        else:
+            raise ValueError(
+                f"Unexpected frame_dim for part {part}: got {F}, expected {expect5} (5ch) or {expect3} (3ch)"
+            )
+
+        # Encode: [B, L, K*5] -> [B, D]
+        z = self.encoder(x5, part)
 
         # Quantize: [B, D] -> [B, D], codes, losses
         z_q, codes, q_loss, usage_loss = self.quantizer(z)
 
-        # Decode: [B, D] -> [B, L, F]
-        recon = self.decoder(z_q, part)
+        # Decode: [B, D] -> [B, L, K*5]
+        recon5 = self.decoder(z_q, part)
+
+        # If original input was 3-channel, slice back to 3 channels; else keep 5
+        if input_was_3ch:
+            recon5_view = recon5.view(B, L, K, 5)
+            recon = recon5_view[:, :, :, :3].contiguous().view(B, L, expect3)
+        else:
+            recon = recon5
 
         return recon, codes, q_loss, usage_loss, z_q
 
@@ -136,9 +163,10 @@ class RVQModel(nn.Module):
             'levels': self.quantizer.levels,
             'commitment_beta': self.quantizer.beta,
             'ema_decay': self.quantizer.ema_decay,
-            'usage_reg': self.quantizer.usage_reg,
+            'usage_reg': self.quantizer._usage_weight(),
             'supported_parts': list(PART_DIMENSIONS.keys()),
-            'part_dimensions': {part: dim * 3 for part, dim in PART_DIMENSIONS.items()},
             'total_parameters': sum(p.numel() for p in self.parameters()),
-            'trainable_parameters': sum(p.numel() for p in self.parameters() if p.requires_grad),
+            'trainable_parameters': sum(
+                p.numel() for p in self.parameters() if p.requires_grad
+            ),
         }

@@ -8,7 +8,7 @@ echo "Starting SignStream-RVQ training..."
 # Configuration
 CONFIG_PATH="signstream/configs/default.yaml"
 EXPERIMENT_NAME="rvq_single_gpu"
-DEVICE="cuda:0"
+DEVICE="cuda:1"
 
 # Check if CUDA is available
 if ! python -c "import torch; print('CUDA available:', torch.cuda.is_available())"; then

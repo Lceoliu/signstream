@@ -231,34 +231,6 @@ class RVQTrainingLoop:
                     f"Total Loss: {total_loss_val:.4f}"
                 )
 
-            # Explicitly delete per-batch tensors and periodically clear cache
-            try:
-                del x_seq
-            except Exception:
-                pass
-            try:
-                del x_seq_all
-            except Exception:
-                pass
-            try:
-                del recon
-            except Exception:
-                pass
-            try:
-                del codes
-            except Exception:
-                pass
-            try:
-                del z_q
-            except Exception:
-                pass
-            try:
-                del loss_r, q_loss, usage_loss, loss_t
-            except Exception:
-                pass
-            if torch.cuda.is_available() and (batch_idx % 50 == 0):  # More frequent cache clearing
-                torch.cuda.empty_cache()
-
         # Average metrics over batches
         for part in self.body_parts:
             for metric_name in epoch_metrics[part]:
@@ -299,7 +271,7 @@ class RVQTrainingLoop:
                         continue
 
                     # Get chunks for this body part
-                    x = batch['chunks'][part]
+                    x = batch['chunks'][part].detach()
                     B, N, L, K, C = x.shape
 
                     # Mask padded chunks
@@ -354,32 +326,6 @@ class RVQTrainingLoop:
                         for metric_name, value in batch_metrics[part].items():
                             epoch_metrics[part][metric_name] += value
 
-                # Explicitly delete per-batch tensors to reduce peak memory during validation
-                try:
-                    del x_seq
-                except Exception:
-                    pass
-                try:
-                    del x_seq_all
-                except Exception:
-                    pass
-                try:
-                    del recon
-                except Exception:
-                    pass
-                try:
-                    del codes
-                except Exception:
-                    pass
-                try:
-                    del z_q
-                except Exception:
-                    pass
-                try:
-                    del loss_r, q_loss, usage_loss, loss_t
-                except Exception:
-                    pass
-
         # Average metrics
         num_batches = len(self.val_loader)
         for part in self.body_parts:
@@ -392,7 +338,6 @@ class RVQTrainingLoop:
 
         for part in self.body_parts:
             if all_codes[part]:
-                # Combine all codes for this part
                 part_codes = torch.cat(
                     all_codes[part], dim=0
                 )  # [total_samples, levels]
@@ -404,7 +349,6 @@ class RVQTrainingLoop:
                 )
                 codebook_metrics[part] = part_metrics
 
-        # Free GPU/CPU caches after validation to prevent memory growth across epochs
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -480,50 +424,44 @@ class RVQTrainingLoop:
 
             # Validation
             if epoch % self.eval_every == 0:
-                val_metrics, codebook_metrics = self.validate_epoch(epoch)
+                with torch.no_grad():
+                    val_metrics, codebook_metrics = self.validate_epoch(epoch)
 
-                # Calculate average validation loss for checkpointing
-                avg_val_loss = np.mean(
-                    [metrics['total_loss'] for metrics in val_metrics.values()]
-                )
+                    # Calculate average validation loss for checkpointing
+                    avg_val_loss = np.mean(
+                        [metrics['total_loss'] for metrics in val_metrics.values()]
+                    )
 
-                is_best = avg_val_loss < self.best_val_loss
-                if is_best:
-                    self.best_val_loss = avg_val_loss
+                    is_best = avg_val_loss < self.best_val_loss
+                    if is_best:
+                        self.best_val_loss = avg_val_loss
 
-                # Log metrics
-                self._log_metrics(epoch, train_metrics, val_metrics, codebook_metrics)
+                    # Log metrics
+                    self._log_metrics(
+                        epoch, train_metrics, val_metrics, codebook_metrics
+                    )
 
-                # Save checkpoint
-                all_metrics = {
-                    'train': train_metrics,
-                    'val': val_metrics,
-                    'codebook': codebook_metrics,
-                }
-                self.save_checkpoint(epoch, all_metrics, is_best)
+                    # Save checkpoint
+                    all_metrics = {
+                        'train': train_metrics,
+                        'val': val_metrics,
+                        'codebook': codebook_metrics,
+                    }
+                    self.save_checkpoint(epoch, all_metrics, is_best)
 
             # Sample tokens
             if epoch % self.sample_every == 0:
-                token_samples = self.sample_tokens(epoch)
-                self._log_token_samples(epoch, token_samples)
+                with torch.no_grad():
+                    token_samples = self.sample_tokens(epoch)
+                    self._log_token_samples(epoch, token_samples)
 
-            # Free caches - explicitly clear tensor references  
-            try:
-                del train_metrics
-            except:
-                pass
-            try: 
-                del val_metrics
-            except:
-                pass
-            try:
-                del codebook_metrics
-            except:
-                pass
-            try:
-                del all_metrics
-            except:
-                pass
+            # Free caches - explicitly clear tensor references
+            del (
+                train_metrics,
+                val_metrics,
+                codebook_metrics,
+                all_metrics,
+            )
             try:
                 del token_samples
             except:

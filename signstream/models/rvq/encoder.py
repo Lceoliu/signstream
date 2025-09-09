@@ -145,12 +145,11 @@ class PoseEncoder(nn.Module):
         """Get input dimension for a specific body part."""
         if part not in PART_DIMENSIONS:
             raise ValueError(f"Unknown body part: {part}")
-        return PART_DIMENSIONS[part] * 5  # x, y, confidence, vx, vy
+        return PART_DIMENSIONS[part] * 5  # default expects 5 channels
 
     def _validate_input_shape(self, x: torch.Tensor, part: str) -> None:
-        """Validate input tensor shape for the given body part."""
-        expected_frame_dim = self._get_part_input_dim(part)
-
+        """Validate input tensor shape for the given body part. Accept 3ch or 5ch."""
+        expected5 = self._get_part_input_dim(part)
         if len(x.shape) != 3:
             raise ValueError(f"Expected 3D input [B, L, F], got {x.shape}")
 
@@ -158,9 +157,11 @@ class PoseEncoder(nn.Module):
         if L != self.chunk_len:
             raise ValueError(f"Expected chunk_len={self.chunk_len}, got L={L}")
 
-        if F != expected_frame_dim:
+        K = PART_DIMENSIONS[part]
+        expected3 = K * 3
+        if F != expected5 and F != expected3:
             raise ValueError(
-                f"Expected frame_dim={expected_frame_dim} for {part}, got F={F}"
+                f"Expected frame_dim {expected5} (5ch) or {expected3} (3ch) for {part}, got F={F}"
             )
 
     def _aggregate_temporal(self, h: torch.Tensor) -> torch.Tensor:
@@ -207,6 +208,12 @@ class PoseEncoder(nn.Module):
         # Input projection (different for each body part)
         if self.arch == "mlp":
             # Flatten temporal dimension and project
+            # If 3ch given, expand to 5ch by appending zeros for velocities
+            K = PART_DIMENSIONS[part]
+            if x.shape[-1] == K * 3:
+                x3 = x.view(B, L, K, 3)
+                zeros_vel = torch.zeros(B, L, K, 2, device=x.device, dtype=x.dtype)
+                x = torch.cat([x3, zeros_vel], dim=-1).view(B, L, K * 5)
             x_flat = x.view(B, -1)  # [B, L*F]
             h = self.input_projections[part](x_flat)  # [B, D]
 
@@ -220,7 +227,12 @@ class PoseEncoder(nn.Module):
             h = self.layer_norm(h)
 
         elif self.arch == "transformer":
-            # Project each frame
+            # Project each frame (expand 3ch->5ch if needed)
+            K = PART_DIMENSIONS[part]
+            if x.shape[-1] == K * 3:
+                x3 = x.view(B, L, K, 3)
+                zeros_vel = torch.zeros(B, L, K, 2, device=x.device, dtype=x.dtype)
+                x = torch.cat([x3, zeros_vel], dim=-1).view(B, L, K * 5)
             h = self.input_projections[part](x)  # [B, L, D]
 
             # Add positional embeddings

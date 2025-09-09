@@ -198,17 +198,17 @@ def main():
     print("=" * 60)
     print("Testing SignStream RVQ Shared Backbone Architecture")
     print("=" * 60)
-    
+
     try:
         test_quantizer()
         test_shared_backbone_model()
         test_model_reconstruction()
         test_overfitting_capability()
-        
+
         print("\n" + "=" * 60)
         print("[SUCCESS] ALL TESTS PASSED! Shared backbone architecture is working correctly.")
         print("=" * 60)
-        
+
         # Print model info
         model = RVQModel(
             latent_dim=256,
@@ -224,17 +224,16 @@ def main():
             dropout=0.1,
             temporal_aggregation='mean'
         )
-        
+
         model_info = model.get_model_info()
         print(f"\nModel Information:")
         print(f"  Total parameters: {model_info['total_parameters']:,}")
         print(f"  Architecture: {model_info['arch']}")
         print(f"  Latent dim: {model_info['latent_dim']}")
         print(f"  Supported body parts: {model_info['supported_parts']}")
-        print(f"  Part dimensions: {model_info['part_dimensions']}")
-        
+
         return True
-        
+
     except Exception as e:
         print(f"\n[FAILED] TEST FAILED: {e}")
         import traceback
