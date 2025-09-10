@@ -7,7 +7,7 @@ echo "Starting SignStream-RVQ token export..."
 
 # Configuration
 CONFIG_PATH="signstream/configs/default.yaml"
-CHECKPOINT_PATH=${CHECKPOINT_PATH:-"checkpoints/best_model.pt"}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/data/data_lc/slr_rvq/signstream/checkpoints/Baseline-Test002_20250909_084115/checkpoint_epoch_165.pt"}
 OUTPUT_PATH=${OUTPUT_PATH:-"exports/tokens.jsonl"}
 NUM_SAMPLES=${NUM_SAMPLES:-50}
 SPLIT=${SPLIT:-"val"}

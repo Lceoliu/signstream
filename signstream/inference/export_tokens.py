@@ -231,7 +231,7 @@ def main() -> None:
 
     # Setup logging
     logging.basicConfig(level=logging.INFO)
-    
+
     # Load configuration
     logger.info(f"Loading config: {args.config}")
     with open(args.config, "r", encoding="utf-8") as f:
@@ -251,7 +251,7 @@ def main() -> None:
             split=args.split,
             chunk_len=config["data"]["chunk_len"],
             fps=config["data"]["fps"],
-            normalize=config["data"]["normalize"]["center_parts"],
+            # normalize=config["data"]["normalize"]["center_parts"],
             augment=False,
             body_part_indices=config["data"]["body_parts"],
             center_indices=config["data"]["center_indices"],
@@ -291,7 +291,7 @@ def main() -> None:
             json.dump(samples, f, ensure_ascii=False, indent=2)
 
     logger.info(f"Exported {len(samples)} samples to {output_path}")
-    
+
     # Print sample output for verification
     if samples:
         logger.info("Sample token template:")
