@@ -76,6 +76,9 @@ class RVQTrainingLoop:
 
         # Body parts to train on
         self.body_parts = ['face', 'left_hand', 'right_hand', 'body', 'full_body']
+        
+        # DDP compatibility flag (can be overridden in subclasses)
+        self.is_ddp = False
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """Train for one epoch."""
@@ -230,6 +233,14 @@ class RVQTrainingLoop:
                     f"Epoch {epoch}, Batch {batch_idx}/{total_batches}, "
                     f"Total Loss: {total_loss_val:.4f}"
                 )
+            
+            # Memory cleanup more frequently to prevent gradual accumulation
+            if batch_idx % 50 == 0:
+                # Clean up intermediate variables
+                del batch_metrics
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         # Average metrics over batches
         for part in self.body_parts:
@@ -556,3 +567,115 @@ class RVQTrainingLoop:
                     self.logger_writer.log_scalar(
                         f'codebook/{part}_{level_name}_{metric_name}', value, epoch
                     )
+    
+    def _train_epoch(self) -> Dict[str, float]:
+        """Standard method name for DDP compatibility. Calls train_epoch.""" 
+        return self.train_epoch(self.current_epoch)
+        
+    def _validate_epoch(self) -> Dict[str, float]:
+        """Standard method name for DDP compatibility. Calls validate_epoch."""
+        val_metrics, _ = self.validate_epoch(self.current_epoch)
+        return val_metrics
+        
+    def _process_batch(self, batch: Dict, is_training: bool = True) -> Dict[str, float]:
+        """Process a single batch and return loss metrics (DDP compatibility)."""
+        if is_training:
+            self.optimizer.zero_grad()
+            
+        total_loss = 0.0
+        batch_metrics = {}
+        
+        # Process each body part
+        for part in self.body_parts:
+            if part not in batch['chunks']:
+                continue
+
+            # Get chunks for this body part [B, N, L, K, C]
+            x = batch['chunks'][part]
+            B, N, L, K, C = x.shape
+
+            # Mask padded chunks
+            mask = batch.get('chunk_mask', None)
+            if mask is not None:
+                mask = mask.to(self.device)  # [B, N]
+            else:
+                mask = torch.ones(B, N, dtype=torch.bool, device=self.device)
+
+            # Reshape to [B*N, L, K*C] and mask valid chunks only
+            x_seq_all = x.view(B * N, L, K * C).to(self.device)
+            mask_flat = mask.view(B * N)
+            if mask_flat.any():
+                x_seq = x_seq_all[mask_flat]
+            else:
+                continue  # no valid chunks
+
+            # Forward pass
+            if is_training:
+                recon, codes, q_loss, usage_loss, z_q = self.model(x_seq, part)
+            else:
+                with torch.no_grad():
+                    recon, codes, q_loss, usage_loss, z_q = self.model(x_seq, part)
+
+            # Reconstruction loss using improved weighted loss
+            from .improved_losses import weighted_recon_loss
+            loss_r = weighted_recon_loss(
+                recon,
+                x_seq,
+                loss_type="mse",
+                position_weight=self.position_weight,
+                velocity_weight=self.velocity_weight,
+                ignore_confidence=True,
+            )
+
+            # Stability checks
+            if not torch.isfinite(loss_r) or not torch.isfinite(q_loss) or not torch.isfinite(usage_loss):
+                continue
+
+            # Temporal loss (disabled by default for padding)
+            loss_t = torch.tensor(0.0, device=self.device)
+
+            # Total loss for this part
+            part_loss = loss_r + q_loss + usage_loss + self.temporal_alpha * loss_t
+            total_loss += part_loss
+
+            # Track metrics
+            batch_metrics[part + '_recon_loss'] = loss_r.item()
+            batch_metrics[part + '_q_loss'] = q_loss.item()
+            batch_metrics[part + '_usage_loss'] = usage_loss.item()
+            batch_metrics[part + '_temporal_loss'] = loss_t.item()
+            batch_metrics[part + '_total_loss'] = part_loss.item()
+
+        # Backward pass for training
+        if is_training and torch.isfinite(total_loss):
+            # Handle mixed precision as in train_epoch
+            amp_mode = str(self.training_config.get('amp', 'fp32')).lower()
+            use_cuda = self.device.type == 'cuda'
+            
+            if amp_mode == 'fp16' and use_cuda:
+                from torch.cuda.amp import autocast, GradScaler
+                if not hasattr(self, '_scaler'):
+                    self._scaler = GradScaler()
+                with autocast(dtype=torch.float16):
+                    scaled_loss = total_loss * self.loss_scale_factor
+                self._scaler.scale(scaled_loss).backward()
+                if self.max_grad_norm > 0:
+                    self._scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                self._scaler.step(self.optimizer)
+                self._scaler.update()
+            else:
+                if amp_mode == 'bf16' and use_cuda:
+                    from torch.cuda.amp import autocast
+                    with autocast(dtype=torch.bfloat16):
+                        scaled_loss = total_loss * self.loss_scale_factor
+                        scaled_loss.backward()
+                else:
+                    scaled_loss = total_loss * self.loss_scale_factor
+                    scaled_loss.backward()
+                
+                if self.max_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                self.optimizer.step()
+
+        batch_metrics['total_loss'] = total_loss.item() if torch.isfinite(total_loss) else 0.0
+        return batch_metrics

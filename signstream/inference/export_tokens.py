@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_model(config: Dict[str, Any], checkpoint_path: Optional[str] = None) -> RVQModel:
-    """Load RVQ model from configuration and optional checkpoint."""
+    """Load RVQ model from configuration and optional checkpoint with memory management."""
     
     # Create model with new shared backbone architecture
     model = RVQModel(
@@ -40,13 +40,20 @@ def load_model(config: Dict[str, Any], checkpoint_path: Optional[str] = None) ->
     
     if checkpoint_path:
         logger.info(f"Loading checkpoint: {checkpoint_path}")
+        # Load checkpoint with map_location to avoid CUDA memory issues
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
         
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            # Legacy format
-            model.load_state_dict(checkpoint.get('model_state', checkpoint))
+        try:
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                # Legacy format
+                model.load_state_dict(checkpoint.get('model_state', checkpoint))
+        finally:
+            # Clean up checkpoint immediately after loading
+            del checkpoint
+            import gc
+            gc.collect()
     
     model.eval()
     return model
@@ -101,7 +108,7 @@ def export_samples(
     device: torch.device = torch.device("cpu"),
 ) -> List[Dict[str, Any]]:
     """
-    Export token sequences for multiple body parts.
+    Export token sequences for multiple body parts with memory management.
     
     Args:
         model: Trained RVQ model
@@ -115,7 +122,10 @@ def export_samples(
     Returns:
         List of exported token data
     """
+    import gc
+    
     model.to(device)
+    model.eval()  # Ensure model is in eval mode
     results = []
     
     logger.info(f"Exporting {num_samples} samples for parts: {body_parts}")
@@ -136,7 +146,7 @@ def export_samples(
             "meta": {"note": "ids按各自码本空间编码，不与文本词表混用"}
         }
         
-        # Process each body part
+        # Process each body part with memory management
         for part in body_parts:
             if part not in sample["chunks"]:
                 continue
@@ -147,9 +157,15 @@ def export_samples(
             
             with torch.no_grad():
                 _, codes, _, _, _ = model(x_flat, part)
+                # Immediately move to CPU and clone to break gradient graph
+                codes_cpu = codes.detach().cpu().clone()
+            
+            # Clean up intermediate tensors
+            del x_flat, codes
             
             # Convert to lists
-            codes_list = codes.cpu().tolist()  # [N, levels]
+            codes_list = codes_cpu.tolist()  # [N, levels]
+            del codes_cpu  # Clean up tensor
             
             # Format tokens by chunk
             part_tokens = []
@@ -175,8 +191,10 @@ def export_samples(
                     rle_tokens.append(token_entry)
                 
                 part_tokens = rle_tokens
+                del compressed_codes  # Clean up
             
             sample_result["tokens"][part] = part_tokens
+            del codes_list, part_tokens  # Clean up
         
         # Create template visualization (first few chunks)
         max_template_chunks = min(5, sample_result.get("num_chunks", 0))
@@ -192,11 +210,25 @@ def export_samples(
             if codes_for_chunk:
                 template = create_token_template(codes_for_chunk, chunk_idx)
                 sample_result["templates"].append(template)
+            
+            del codes_for_chunk  # Clean up
         
         results.append(sample_result)
+        del sample, sample_result  # Clean up sample-level variables
+        
+        # Memory cleanup every 5 samples
+        if (i + 1) % 5 == 0:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         if (i + 1) % 10 == 0:
             logger.info(f"Exported {i + 1}/{num_samples} samples")
+    
+    # Final cleanup
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     return results
 
@@ -208,7 +240,9 @@ def create_dummy_dataset_for_export(config: Dict[str, Any], split: str) -> CSLDa
 
 
 def main() -> None:
-    """Main export function."""
+    """Main export function with memory management."""
+    import gc
+    
     parser = argparse.ArgumentParser(description="Export RVQ tokens")
     parser.add_argument("--config", type=str, default="signstream/configs/default.yaml",
                        help="Path to configuration file")
@@ -227,6 +261,8 @@ def main() -> None:
                        help="Device to use (cuda/cpu)")
     parser.add_argument("--format", type=str, choices=["jsonl", "json"], default="jsonl",
                        help="Output format")
+    parser.add_argument("--batch-export", action="store_true",
+                       help="Export in batches to reduce memory usage")
     args = parser.parse_args()
 
     # Setup logging
@@ -266,38 +302,57 @@ def main() -> None:
     model = load_model(config, args.checkpoint)
     logger.info("Model loaded successfully")
 
-    # Export samples
-    samples = export_samples(
-        model=model,
-        dataset=dataset,
-        num_samples=args.num_samples,
-        body_parts=args.body_parts,
-        enable_rle=config["export"]["enable_rle"],
-        rle_threshold=config["export"]["rle_threshold"],
-        device=device,
-    )
+    # Export samples with memory management
+    try:
+        samples = export_samples(
+            model=model,
+            dataset=dataset,
+            num_samples=args.num_samples,
+            body_parts=args.body_parts,
+            enable_rle=config.get("export", {}).get("enable_rle", False),
+            rle_threshold=config.get("export", {}).get("rle_threshold", 0.02),
+            device=device,
+        )
+    finally:
+        # Clean up model and dataset references
+        del model, dataset
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Create output directory
     output_path = Path(args.out)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Save results
-    if args.format == "jsonl":
-        with open(output_path, "w", encoding="utf-8") as f:
-            for sample in samples:
-                f.write(json.dumps(sample, ensure_ascii=False) + "\n")
-    else:  # json
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(samples, f, ensure_ascii=False, indent=2)
+    # Save results with memory management
+    try:
+        if args.format == "jsonl":
+            with open(output_path, "w", encoding="utf-8") as f:
+                for i, sample in enumerate(samples):
+                    f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+                    # Clean up processed samples
+                    if i % 50 == 0:
+                        gc.collect()
+        else:  # json
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(samples, f, ensure_ascii=False, indent=2)
 
-    logger.info(f"Exported {len(samples)} samples to {output_path}")
+        logger.info(f"Exported {len(samples)} samples to {output_path}")
 
-    # Print sample output for verification
-    if samples:
-        logger.info("Sample token template:")
-        sample = samples[0]
-        for i, template in enumerate(sample.get("templates", [])[:3]):
-            logger.info(f"  Chunk {i}: {template}")
+        # Print sample output for verification
+        if samples:
+            logger.info("Sample token template:")
+            sample = samples[0]
+            for i, template in enumerate(sample.get("templates", [])[:3]):
+                logger.info(f"  Chunk {i}: {template}")
+            del sample  # Clean up reference
+    
+    finally:
+        # Final cleanup
+        del samples
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

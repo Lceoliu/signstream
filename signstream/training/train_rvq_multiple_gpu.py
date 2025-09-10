@@ -213,7 +213,7 @@ def create_model(config: dict, device: torch.device, rank: int) -> RVQModel:
 
 
 class DDPTrainingLoop(RVQTrainingLoop):
-    """DDP-aware training loop."""
+    """DDP-aware training loop with memory optimizations."""
     
     def __init__(self, *args, **kwargs):
         self.rank = kwargs.pop('rank', 0)
@@ -230,6 +230,140 @@ class DDPTrainingLoop(RVQTrainingLoop):
         """Log metrics only on rank 0."""
         if self.rank == 0:
             super()._log_metrics(epoch, train_metrics, val_metrics, codebook_metrics)
+    
+    def _train_epoch(self):
+        """DDP-aware training epoch with memory management."""
+        import torch.distributed as dist
+        import gc
+        
+        self.model.train()
+        all_losses = {}
+        all_codes = {part: [] for part in self.config["data"]["body_parts"].keys()}
+        
+        # Synchronize samplers for consistent epoch processing
+        if hasattr(self.train_loader.sampler, 'set_epoch'):
+            self.train_loader.sampler.set_epoch(self.current_epoch)
+        
+        for batch_idx, batch in enumerate(self.train_loader):
+            # Skip empty batches
+            if not batch or not batch.get('chunks'):
+                continue
+            
+            batch_losses = self._process_batch(batch, is_training=True)
+            
+            # Collect codes for monitoring (less frequently in DDP)
+            if batch_idx % 20 == 0 and self.rank == 0:  # Only rank 0, less frequent
+                for part_name, chunks in batch['chunks'].items():
+                    if part_name in self.config["data"]["body_parts"]:
+                        x = chunks.to(self.device)
+                        N, L, K, C = x.shape
+                        x_flat = x.view(N, L, K * C)
+                        
+                        with torch.no_grad():
+                            _, codes, _, _, _ = self.model(x_flat, part_name)
+                            # Use .detach().cpu().clone() to prevent memory leaks
+                            all_codes[part_name].append(codes.detach().cpu().clone())
+                        
+                        # Clean up intermediate tensors
+                        del x, x_flat, codes
+            
+            # Accumulate losses
+            for loss_name, loss_value in batch_losses.items():
+                if loss_name not in all_losses:
+                    all_losses[loss_name] = []
+                all_losses[loss_name].append(loss_value)
+            
+            # Memory cleanup more frequently in DDP
+            if batch_idx % 25 == 0:  # More frequent cleanup for DDP
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            # Clean up batch-level variables
+            del batch, batch_losses
+        
+        # Synchronize all processes before computing final metrics
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        
+        # Compute epoch metrics (only on rank 0 to avoid redundant computation)
+        epoch_metrics = {}
+        if self.rank == 0 and all_losses:
+            for loss_name, loss_values in all_losses.items():
+                if loss_values:  # Check if list is not empty
+                    epoch_metrics[f"train_{loss_name}"] = sum(loss_values) / len(loss_values)
+        
+        # Final cleanup
+        del all_losses, all_codes
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        return epoch_metrics
+    
+    def _validate_epoch(self):
+        """DDP-aware validation epoch with memory management."""
+        import torch.distributed as dist
+        import gc
+        
+        self.model.eval()
+        all_losses = {}
+        all_codes = {part: [] for part in self.config["data"]["body_parts"].keys()}
+        
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(self.val_loader):
+                if not batch or not batch.get('chunks'):
+                    continue
+                
+                batch_losses = self._process_batch(batch, is_training=False)
+                
+                # Collect codes for monitoring (less frequently in DDP)
+                if batch_idx % 10 == 0 and self.rank == 0:  # Only rank 0, less frequent
+                    for part_name, chunks in batch['chunks'].items():
+                        if part_name in self.config["data"]["body_parts"]:
+                            x = chunks.to(self.device)
+                            N, L, K, C = x.shape
+                            x_flat = x.view(N, L, K * C)
+                            
+                            _, codes, _, _, _ = self.model(x_flat, part_name)
+                            # Use .detach().cpu().clone() to prevent memory leaks
+                            all_codes[part_name].append(codes.detach().cpu().clone())
+                            
+                            # Clean up intermediate tensors
+                            del x, x_flat, codes
+                
+                # Accumulate losses
+                for loss_name, loss_value in batch_losses.items():
+                    if loss_name not in all_losses:
+                        all_losses[loss_name] = []
+                    all_losses[loss_name].append(loss_value)
+                
+                # Memory cleanup in DDP validation
+                if batch_idx % 15 == 0:
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                
+                del batch, batch_losses
+        
+        # Synchronize all processes
+        if dist.is_available() and dist.is_initialized():
+            dist.barrier()
+        
+        # Compute validation metrics (only on rank 0)
+        val_metrics = {}
+        if self.rank == 0 and all_losses:
+            for loss_name, loss_values in all_losses.items():
+                if loss_values:  # Check if list is not empty
+                    val_metrics[f"val_{loss_name}"] = sum(loss_values) / len(loss_values)
+        
+        # Final cleanup
+        del all_losses, all_codes
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        return val_metrics
 
 
 def train_ddp(rank: int, world_size: int, config: dict, args):
@@ -280,23 +414,25 @@ def train_ddp(rank: int, world_size: int, config: dict, args):
         shuffle=False
     )
     
-    # Create data loaders
+    # Create data loaders with memory-optimized settings for DDP
     train_loader = DataLoader(
         train_dataset,
         batch_size=config["training"]["batch_size"] // world_size,  # Scale batch size
         sampler=train_sampler,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=2,  # Reduced for DDP to prevent memory fragmentation
+        pin_memory=False,  # Disabled to reduce GPU memory pressure in DDP
         collate_fn=CSLDailyDataModule.collate_fn,
+        persistent_workers=False,  # Prevent worker memory retention in DDP
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=config["training"]["batch_size"] // world_size,
         sampler=val_sampler,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=2,  # Reduced for DDP
+        pin_memory=False,  # Disabled for DDP
         collate_fn=CSLDailyDataModule.collate_fn,
+        persistent_workers=False,  # Prevent worker memory retention in DDP
     )
     
     # Create model
